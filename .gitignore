@@ -1,0 +1,33 @@
+# Build directories
+build/
+build-*/
+
+# Compiled files
+*.app
+*.dmg
+*.exe
+*.so
+*.a
+*.o
+
+# Qt files
+*.pro.user
+*.autosave
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# System files
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# VSCode
+.vscode/
