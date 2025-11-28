@@ -11,16 +11,12 @@ ApplicationWindow {
     Column {
         anchors.fill: parent
         anchors.margins: 1
-        
-        // Top Status Bar (5%)
         Rectangle {
             width: parent.width
             height: parent.height * 0.05
             border.width: 1
             border.color: "black"
         }
-        
-        // Main Content Area (70%)
         Rectangle {
             width: parent.width
             height: parent.height * 0.7
@@ -32,7 +28,6 @@ ApplicationWindow {
                 anchors.fill: parent
                 anchors.margins: 1
                 
-                // Left Chart Area (60%)
                 Rectangle {
                     height: parent.height
                     width: parent.width * 0.6
@@ -40,13 +35,12 @@ ApplicationWindow {
                     border.color: "black"
                     
                     Text {
-                        text: "PRICE CHART AREA"
+                        text: "PRICE CHART"
                         font.pixelSize: 24
                         anchors.centerIn: parent
                     }
                 }
                 
-                // Right Controls Area (40%)
                 Rectangle {
                     height: parent.height
                     width: parent.width * 0.4
@@ -58,7 +52,6 @@ ApplicationWindow {
                         anchors.fill: parent
                         anchors.margins: 1
                         
-                        // Left Metrics Panel (50%)
                         Rectangle {
                             height: parent.height
                             width: parent.width * 0.5
@@ -70,7 +63,6 @@ ApplicationWindow {
                                 anchors.fill: parent
                                 anchors.margins: 1
                                 
-                                // Top: Order Book
                                 Rectangle {
                                     height: parent.height * 0.5
                                     width: parent.width
@@ -84,7 +76,6 @@ ApplicationWindow {
                                     }
                                 }
                                 
-                                // Bottom: Trading Metrics
                                 Rectangle {
                                     height: parent.height * 0.5
                                     width: parent.width
@@ -94,14 +85,10 @@ ApplicationWindow {
                                     Column {
                                         anchors.fill: parent
                                         anchors.margins: 2
-                                        
-                                        // All your metric rows - using basic Rectangles
-                                        // Balance
                                         Rectangle {
                                             height: parent.height * 0.0625
                                             width: parent.width
                                             color: "transparent"
-                                            
                                             Row {
                                                 anchors.fill: parent
                                                 Rectangle {
@@ -133,7 +120,6 @@ ApplicationWindow {
                                             }
                                         }
                                         
-                                        // PnL
                                         Rectangle {
                                             height: parent.height * 0.0625
                                             width: parent.width
@@ -207,12 +193,6 @@ ApplicationWindow {
                                                 }
                                             }
                                         }
-                                        
-                                        // Continue with all your other metrics...
-                                        // BPS, CTR, PFI, PTRC, ISM, uSpread, NatCat, ACK, RTL, E-Stop, PLR, MRM, MAE, ORT
-                                        // ... (copy the same pattern for each metric)
-                                        
-                                        // Example: BPS
                                         Rectangle {
                                             height: parent.height * 0.0625
                                             width: parent.width
@@ -249,14 +229,10 @@ ApplicationWindow {
                                             }
                                         }
                                         
-                                        // Add the remaining 13 metrics following the same pattern...
-                                        
                                     }
                                 }
                             }
                         }
-                        
-                        // Right Trading Panel (50%)
                         Rectangle {
                             height: parent.height
                             width: parent.width * 0.5
@@ -264,7 +240,7 @@ ApplicationWindow {
                             border.color: "black"
                             
                             Text {
-                                text: "TRADING CONTROLS"
+                                text: "ORDER"
                                 color: "black"
                                 font.pixelSize: 14
                                 anchors.centerIn: parent

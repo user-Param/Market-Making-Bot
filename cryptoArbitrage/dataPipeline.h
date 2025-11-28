@@ -46,6 +46,6 @@ private:
 
 QByteArray decompressGzip(const QByteArray &data);
 
-#endif // DATAPIPELINE_H
+#endif 
 
 
