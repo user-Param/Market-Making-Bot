@@ -53,9 +53,6 @@ DataPipeline* g_pipeline = nullptr;
 
 void signalHandler(int signal) {
     g_running = false;
-    if (g_pipeline) {
-        g_pipeline->disconnectFromAllExchanges();
-    }
 }
 
 
@@ -94,6 +91,20 @@ int main(int argc, char *argv[])
         QTimer::singleShot(100, [&pipeline]() {
             pipeline.connectToAllExchanges();
         });
+
+        QTimer exitTimer;
+        exitTimer.setInterval(50);
+        QObject::connect(&exitTimer, &QTimer::timeout, [&]() {
+        if (!g_running) {
+        if (g_pipeline) {
+            g_pipeline->disconnectFromAllExchanges();
+        }
+        app.quit();
+    }
+});
+exitTimer.start();
+
+
         
         int result = app.exec();
         g_running = false;
