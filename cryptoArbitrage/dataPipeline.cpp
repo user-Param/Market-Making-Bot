@@ -68,7 +68,17 @@ void DataPipeline::connectToExchange(uint8_t exchangeId)
             Qt::DirectConnection);
 
     connect(socket, QOverload<const QList<QSslError>&>::of(&QWebSocket::sslErrors),
-            [](const QList<QSslError>&) {});
+        [socket](const QList<QSslError>& errors){
+            for (const auto &err : errors) {
+                qWarning() << "SSL error on" << socket->requestUrl() << ":" << err.errorString();
+            }
+        });
+
+    connect(socket, &QWebSocket::errorOccurred, [socket](QAbstractSocket::SocketError err){
+    qWarning() << "WebSocket error on" << socket->requestUrl() << ":" << err;
+        });
+
+
 
     socket->open(QUrl(QString::fromUtf8(exchanges[exchangeId].wsUrl)));
 }
@@ -97,9 +107,8 @@ void DataPipeline::disconnectFromAllExchanges()
 void DataPipeline::handleExchangeConnected(uint8_t exchangeId)
 {
     QString name = QString::fromUtf8(exchanges[exchangeId].name);
+    qDebug() << "Connected to exchange:" << name;
     QWebSocket* socket = exchangeSockets[exchangeId];
-
-    // Subscribe Coinbase ticker channel
     if (name == "coinbase") {
         QJsonObject subscription;
         subscription["type"] = "subscribe";
@@ -119,18 +128,16 @@ void DataPipeline::handleExchangeDisconnected(uint8_t exchangeId)
 }
 
 static inline qint64 priceToTicks(double price) {
-    return static_cast<qint64>(price * 100000.0); // 5 decimal ticks
+    return static_cast<qint64>(price * 100000.0); 
 }
 
 void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& message)
 {
-    // ignore noise messages
-    if (message.contains("\"type\"-:\"subscriptions\"") ||
+    if (message.contains("\"type\":\"subscriptions\"") ||
         message.contains("\"type\":\"error\"")) {
         return;
     }
 
-    // parse minimal JSON to extract price only
     QJsonParseError error;
     QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8(), &error);
     if (error.error != QJsonParseError::NoError) return;
@@ -138,7 +145,7 @@ void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& 
     double price = 0.0;
     bool gotPrice = false;
 
-    if (exchangeId == 0) { // binance: {"data":{...,"p":"<price>",...}}
+    if (exchangeId == 0) { 
         QJsonObject obj = doc.object();
         if (obj.contains("data")) {
             QJsonObject dataObj = obj["data"].toObject();
@@ -147,7 +154,7 @@ void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& 
                 gotPrice = (price > 0.0);
             }
         }
-    } else if (exchangeId == 1) { // coinbase ticker: {"type":"ticker","price":"<price>", ...}
+    } else if (exchangeId == 1) { 
         QJsonObject obj = doc.object();
         if (obj["type"].toString() == "ticker" && obj.contains("price")) {
             price = obj["price"].toString().toDouble();
@@ -164,10 +171,10 @@ void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& 
 
 void DataPipeline::handleExchangeBinaryMessage(uint8_t /*exchangeId*/, const QByteArray& /*message*/)
 {
-    // currently not processing binary messages; kept as a stub for future binary feed
+    
 }
 
 void DataPipeline::onWebSocketError(QAbstractSocket::SocketError /*error*/)
 {
-    // no-op minimal handler
+    
 }

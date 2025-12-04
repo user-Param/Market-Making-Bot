@@ -15,8 +15,8 @@ static constexpr size_t MAX_EXCHANGES = 10;
 
 #pragma pack(push,1)
 struct BinaryTrade {
-    int64_t priceTicks;   // fixed-point price
-    int64_t timestamp;    // ms since epoch
+    int64_t priceTicks;   
+    int64_t timestamp;    
     uint8_t exchangeId;
     BinaryTrade() { priceTicks = 0; timestamp = 0; exchangeId = 0; }
 };
@@ -45,10 +45,19 @@ public:
     void connectToExchange(uint8_t exchangeId);
     void disconnectFromExchange(uint8_t exchangeId);
 
+public:
+    const char* getExchangeName(uint8_t id) const {
+        if (id < MAX_EXCHANGES && exchanges[id].enabled)
+            return exchanges[id].name;
+        return nullptr;
+    }
+
+
 signals:
     void connectionChanged(const QString& exchangeName, bool connected);
     void exchangeError(const QString& exchangeName, const QString& error);
     void priceReceived(qint64 priceTicks, uint8_t exchangeId, qint64 timestamp);
+
 
 private slots:
     void onWebSocketError(QAbstractSocket::SocketError error);

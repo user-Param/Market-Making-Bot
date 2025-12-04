@@ -1,6 +1,7 @@
 //#include <QGuiApplication>
 //#include <QQmlApplicationEngine>
 //#include <QQmlContext>
+#include <QWebSocket>
 #include <QTimer>
 #include <QDebug>
 #include <QCoreApplication>
@@ -12,12 +13,18 @@
 //#include <cstdio>
 #include "dataPipeline.h"
 //#include <iomanip>
+#include <vector>
+#include <string>
 #define MAX_EXCHANGES 10
 
+std::vector<double> g_exchangePrices;
+std::vector<const char*> g_exchangeNames;
 std::atomic<double> g_binancePrice{0.0};
 std::atomic<double> g_coinbasePrice{0.0};
 std::atomic<uint64_t> g_tradeCount{0};
 std::atomic<bool> g_running{true};
+
+
 DataPipeline* g_pipeline = nullptr;
 
 // void displayThreadFunc() {
@@ -55,6 +62,25 @@ void signalHandler(int signal) {
     g_running = false;
 }
 
+void printAllPrices()
+{
+    QString out = "[";
+
+    for (size_t i = 0; i < g_exchangeNames.size(); ++i) 
+    {
+        std::atomic_ref<double> ref(g_exchangePrices[i]);
+        double val = ref.load(std::memory_order_relaxed);
+
+        out += QString(g_exchangeNames[i]) + ": " + QString::number(val);
+
+        if (i + 1 < g_exchangeNames.size())
+            out += " | ";
+    }
+
+    out += "]";
+    qDebug() << out;
+
+}
 
 
 
@@ -65,26 +91,29 @@ int main(int argc, char *argv[])
         signal(SIGTERM, signalHandler);
         
         qRegisterMetaType<BinaryTrade>("BinaryTrade");
-        qRegisterMetaType<uint8_t>("uint8_t");
+        qRegisterMetaType<unsigned char>("uint8_t");
         qRegisterMetaType<QByteArray>("QByteArray");
         
         DataPipeline pipeline;
         g_pipeline = &pipeline;
+
+        for (size_t i = 0; i < MAX_EXCHANGES; i++) {
+            const char* name = pipeline.getExchangeName(i);
+            if (name) {
+                qDebug() << "Enabled exchange:" << name;
+                g_exchangeNames.push_back(name);
+                g_exchangePrices.push_back(0.0);
+            }
+        }
+
         
         QObject::connect(&pipeline,&DataPipeline::priceReceived,[](qint64 priceTicks, uint8_t exchangeId, qint64 /*ts*/) 
         {
-
+        double price = priceTicks / 100000.0;
+        std::atomic_ref<double> ref(g_exchangePrices[exchangeId]);
+        ref.store(price, std::memory_order_relaxed);
         g_tradeCount++;
-        double px = static_cast<double>(priceTicks) / 100000.0;
-
-        if (exchangeId == 0){
-            g_binancePrice.store(static_cast<double>(priceTicks) / 100000.0);
-            printf("BINANCE: %.2f\n", px);
-            }
-        else if (exchangeId == 1){
-            g_coinbasePrice.store(static_cast<double>(priceTicks) / 100000.0);
-            printf("COINBASE: %.2f\n", px);
-            }
+        qDebug().noquote() << "Price received:" << g_exchangeNames[exchangeId] << price << Qt::flush;
         });
 
         
@@ -104,9 +133,11 @@ int main(int argc, char *argv[])
 });
 exitTimer.start();
 
-
-        
-        int result = app.exec();
-        g_running = false;
-        return result;
+        QTimer pricePrinter;
+        pricePrinter.setInterval(1);  
+        QObject::connect(&pricePrinter, &QTimer::timeout, []() {
+            printAllPrices();
+        });
+        pricePrinter.start();
+        return app.exec();
 } 
