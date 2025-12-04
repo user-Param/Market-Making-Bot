@@ -16,6 +16,7 @@ DataPipeline::DataPipeline(QObject *parent)
     static constexpr ExchangeConfig EXCHANGE_CONFIGS[] = {
         {"binance", "wss://fstream.binance.com/stream?streams=btcusdt@trade", 0.001, 100, 0, true, false},
         {"coinbase", "wss://ws-feed.exchange.coinbase.com", 0.005, 200, 1, true, false},
+        {"bybit", "wss://stream.bybit.com/v5/public/linear", 0.001, 100, 2, true, false},
     };
 
     const size_t configCount = sizeof(EXCHANGE_CONFIGS)/sizeof(EXCHANGE_CONFIGS[0]);
@@ -118,6 +119,12 @@ void DataPipeline::handleExchangeConnected(uint8_t exchangeId)
         socket->sendTextMessage(doc.toJson(QJsonDocument::Compact));
     }
 
+    else if (name == "bybit") {
+        const QByteArray sub = R"({"op":"subscribe","args":["publicTrade.BTCUSDT"]})";
+        socket->sendTextMessage(QString::fromUtf8(sub));
+        qDebug() << "Sent Bybit subscribe:" << QString::fromUtf8(sub);
+    }
+
     emit connectionChanged(name, true);
 }
 
@@ -138,9 +145,14 @@ void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& 
         return;
     }
 
+    qDebug() << "RAW MESSAGE (exchangeId=" << int(exchangeId) << "):" << message.left(400);
+
     QJsonParseError error;
     QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8(), &error);
-    if (error.error != QJsonParseError::NoError) return;
+    if (error.error != QJsonParseError::NoError){
+        qWarning() << "JSON parse error:" << error.errorString();
+        return;
+    }
 
     double price = 0.0;
     bool gotPrice = false;
@@ -161,6 +173,60 @@ void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& 
             gotPrice = (price > 0.0);
         }
     }
+
+    // BYBIT parsing (exchangeId == 2)
+    else if (exchangeId == 2) {
+        // doc may be object or array depending on Bybit response
+        if (doc.isObject()) {
+            QJsonObject obj = doc.object();
+
+            // v5 often uses fields like "topic", "type" and "data"
+            // Try to find price in common locations:
+            // - obj["data"] as array of trades
+            // - obj["data"] as object containing "p" or "price"
+            if (obj.contains("data")) {
+                QJsonValue dataVal = obj["data"];
+                if (dataVal.isArray()) {
+                    QJsonArray arr = dataVal.toArray();
+                    if (!arr.isEmpty() && arr[0].isObject()) {
+                        QJsonObject trade = arr[0].toObject();
+                        QString priceStr;
+                        if (trade.contains("p")) priceStr = trade["p"].toString();
+                        else if (trade.contains("price")) priceStr = trade["price"].toString();
+                        if (!priceStr.isEmpty()) {
+                            double px = priceStr.toDouble();
+                            if (px > 0) { price = px; gotPrice = true; }
+                        }
+                    }
+                } else if (dataVal.isObject()) {
+                    QJsonObject dobj = dataVal.toObject();
+                    QString priceStr;
+                    if (dobj.contains("p")) priceStr = dobj["p"].toString();
+                    else if (dobj.contains("price")) priceStr = dobj["price"].toString();
+                    else if (dobj.contains("last_price")) priceStr = dobj["last_price"].toString();
+                    if (!priceStr.isEmpty()) {
+                        double px = priceStr.toDouble();
+                        if (px > 0) { price = px; gotPrice = true; }
+                    }
+                }
+            }
+
+            // some Bybit responses place price under "tick" -> "last" etc.
+            if (!gotPrice && obj.contains("tick") && obj["tick"].isObject()) {
+                QJsonObject tick = obj["tick"].toObject();
+                if (tick.contains("last_price")) {
+                    double px = tick["last_price"].toDouble();
+                    if (px > 0) { price = px; gotPrice = true; }
+                } else if (tick.contains("close")) {
+                    double px = tick["close"].toDouble();
+                    if (px > 0) { price = px; gotPrice = true; }
+                }
+            }
+        }
+    }
+
+
+
 
     if (gotPrice) {
         qint64 ticks = priceToTicks(price);
