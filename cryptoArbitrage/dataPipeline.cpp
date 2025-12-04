@@ -130,10 +130,9 @@ void DataPipeline::handleExchangeConnected(uint8_t exchangeId)
     else if (name == "kraken") {
     QJsonObject sub;
     sub["event"] = "subscribe";
-    // Use a valid Kraken pair. For USDT arbitrage use XBT/USDT (Kraken uses XBT symbol for BTC).
     sub["pair"] = QJsonArray{"XBT/USDT"};
     QJsonObject subscription;
-    subscription["name"] = "ticker";   // use ticker (gives last price in field "c")
+    subscription["name"] = "ticker";  
     sub["subscription"] = subscription;
 
     socket->sendTextMessage(QJsonDocument(sub).toJson(QJsonDocument::Compact));
@@ -143,14 +142,13 @@ void DataPipeline::handleExchangeConnected(uint8_t exchangeId)
 
 
 else if (name == "okx") {
-    // Subscribe to fast public trades stream
     QJsonObject sub;
     sub["op"] = "subscribe";
 
     QJsonArray args;
     QJsonObject arg;
     arg["channel"] = "trades";
-    arg["instId"] = "BTC-USDT";  // OKX instrument naming
+    arg["instId"] = "BTC-USDT";  
     args.append(arg);
 
     sub["args"] = args;
@@ -176,13 +174,10 @@ static inline qint64 priceToTicks(double price) {
 
 void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& message)
 {
-    // ignore obvious non-data messages
     if (message.contains("\"type\":\"subscriptions\"") ||
         message.contains("\"type\":\"error\"")) {
         return;
     }
-
-    // parse JSON
     QJsonParseError error;
     QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8(), &error);
     if (error.error != QJsonParseError::NoError) {
@@ -192,23 +187,16 @@ void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& 
 
     double price = 0.0;
     bool gotPrice = false;
-
-    // 1) Kraken sometimes sends ARRAY messages for trades (handle first)
     if (exchangeId == 3) {
-    // Kraken sends ARRAY messages for market data. Two common forms:
-    // 1) TRADE array:  [ channelID, [ [price, volume, ...], ... ], "trade", "XBT/USD" ]
-    // 2) TICKER array: [ channelID, { "c": ["last","lot"], ... }, "ticker", "XBT/USD" ]
     if (doc.isArray()) {
         QJsonArray arr = doc.array();
         if (arr.size() >= 2) {
-            // arr[1] may be an array (trades) or an object (ticker)
             if (arr[1].isArray()) {
                 QJsonArray trades = arr[1].toArray();
                 if (!trades.isEmpty()) {
                     QJsonValue first = trades[0];
                     if (first.isArray()) {
                         QJsonArray tradeInfo = first.toArray();
-                        // index 0 is price string
                         QString priceStr = tradeInfo.size() > 0 ? tradeInfo[0].toString() : QString();
                         double px = priceStr.toDouble();
                         if (px > 0) { price = px; gotPrice = true; }
@@ -222,9 +210,7 @@ void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& 
                 }
             }
             else if (arr[1].isObject()) {
-                // ticker-like object
                 QJsonObject tickObj = arr[1].toObject();
-                // Kraken ticker often uses "c" (close) array where c[0] is last price
                 if (tickObj.contains("c") && tickObj["c"].isArray()) {
                     QJsonArray c = tickObj["c"].toArray();
                     if (!c.isEmpty()) {
@@ -232,7 +218,6 @@ void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& 
                         if (px > 0) { price = px; gotPrice = true; }
                     }
                 }
-                // fallback: sometimes ticker uses "a","b" or "p" etc. Try common fields
                 if (!gotPrice) {
                     if (tickObj.contains("p")) {
                         double px = tickObj["p"].toDouble();
@@ -245,14 +230,12 @@ void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& 
             }
         }
     }
-    // if doc is object -> usually subscription or status; ignore
+    
 }
-
-    // 2) For all other exchanges we expect an object envelope
     else if (doc.isObject()) {
         QJsonObject obj = doc.object();
 
-        if (exchangeId == 0) { // BINANCE (fstream stream wrapper)
+        if (exchangeId == 0) { 
             if (obj.contains("data")) {
                 QJsonObject dataObj = obj["data"].toObject();
                 if (dataObj["e"].toString() == "trade" && dataObj.contains("p")) {
@@ -261,14 +244,13 @@ void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& 
                 }
             }
         }
-        else if (exchangeId == 1) { // COINBASE
+        else if (exchangeId == 1) { 
             if (obj["type"].toString() == "ticker" && obj.contains("price")) {
                 price = obj["price"].toString().toDouble();
                 gotPrice = (price > 0.0);
             }
         }
-        else if (exchangeId == 2) { // BYBIT v5 public linear
-            // v5 often uses fields like "topic","type","data"
+        else if (exchangeId == 2) { 
             if (obj.contains("data")) {
                 QJsonValue dataVal = obj["data"];
                 if (dataVal.isArray()) {
@@ -295,7 +277,6 @@ void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& 
                     }
                 }
             }
-            // fallback: tick object
             if (!gotPrice && obj.contains("tick") && obj["tick"].isObject()) {
                 QJsonObject tick = obj["tick"].toObject();
                 if (tick.contains("last_price")) {
@@ -307,10 +288,7 @@ void DataPipeline::handleExchangeTextMessage(uint8_t exchangeId, const QString& 
                 }
             }
         }
-        else if (exchangeId == 4) {  // OKX
-    // OKX format:
-    // { "arg": {"channel":"trades","instId":"BTC-USDT"},
-    //   "data":[ {"px":"43512.5", ... } ] }
+        else if (exchangeId == 4) { 
     if (obj.contains("data") && obj["data"].isArray()) {
         QJsonArray arr = obj["data"].toArray();
         if (!arr.isEmpty() && arr[0].isObject()) {

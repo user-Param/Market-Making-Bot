@@ -6,9 +6,6 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)  
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -funroll-loops -fstrict-aliasing -ffast-math")
 add_definitions(-DNDEBUG)
-# add_definitions(-DQT_NO_DEBUG_OUTPUT)
-# add_definitions(-DQT_NO_WARNING_OUTPUT)
-# add_definitions(-DQT_NO_INFO_OUTPUT)
 
 set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-Wl,-O3")
 
