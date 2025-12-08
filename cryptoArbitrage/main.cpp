@@ -8,22 +8,30 @@
 #include <csignal>
 //#include <iostream>
 #include <atomic>
+#include <array>  // ADD THIS
+#include <vector>
+#include <string>
 //#include <thread>
-//#include <chrono>
+#include <chrono>
 //#include <cstdio>
 #include "dataPipeline.h"
 //#include <iomanip>
-#include <vector>
-#include <string>
-#define MAX_EXCHANGES 10
+#define MAX_EXCHANGES 20
+extern "C" {
+    #include "StrategyEngine/strategy.h"
+}
 
-std::vector<double> g_exchangePrices;
+
+
+// CHANGE TO std::array
+std::array<std::atomic<double>, MAX_EXCHANGES> g_exchangePrices;
 std::vector<const char*> g_exchangeNames;
 std::atomic<double> g_binancePrice{0.0};
 std::atomic<double> g_coinbasePrice{0.0};
 std::atomic<uint64_t> g_tradeCount{0};
 std::atomic<bool> g_running{true};
 
+MarketData marketSnapshots[MAX_EXCHANGES];
 
 DataPipeline* g_pipeline = nullptr;
 
@@ -65,22 +73,25 @@ void signalHandler(int signal) {
 void printAllPrices()
 {
     QString out = "[";
+    bool first = true;
 
     for (size_t i = 0; i < g_exchangeNames.size(); ++i) 
     {
-        std::atomic_ref<double> ref(g_exchangePrices[i]);
-        double val = ref.load(std::memory_order_relaxed);
-
-        out += QString(g_exchangeNames[i]) + ": " + QString::number(val);
-
-        if (i + 1 < g_exchangeNames.size())
-            out += " | ";
+        // Only print if exchange name exists
+        if (g_exchangeNames[i] != nullptr) {
+            if (!first) out += " | ";
+            first = false;
+            
+            double val = g_exchangePrices[i].load(std::memory_order_relaxed);
+            out += QString(g_exchangeNames[i]) + ": " + QString::number(val);
+        }
     }
 
     out += "]";
     qDebug() << out;
 
 }
+
 
 
 
@@ -97,23 +108,53 @@ int main(int argc, char *argv[])
         DataPipeline pipeline;
         g_pipeline = &pipeline;
 
+        Strategy strat;
+        strategy_init(&strat, marketSnapshots, MAX_EXCHANGES, 0.1, 0.001);
+
+        g_exchangeNames.assign(MAX_EXCHANGES, nullptr);
+        
+        // Initialize atomic array (std::array elements are default constructed)
+        // Optionally set all to 0.0
+        for (auto& price : g_exchangePrices) {
+            price.store(0.0, std::memory_order_relaxed);
+        }
+
         for (size_t i = 0; i < MAX_EXCHANGES; i++) {
             const char* name = pipeline.getExchangeName(i);
             if (name) {
                 qDebug() << "Enabled exchange:" << name;
-                g_exchangeNames.push_back(name);
-                g_exchangePrices.push_back(0.0);
+                g_exchangeNames[i] = name;
+                // Prices already initialized to 0.0 above
             }
         }
 
         
-        QObject::connect(&pipeline,&DataPipeline::priceReceived,[](qint64 priceTicks, uint8_t exchangeId, qint64 /*ts*/) 
+        QObject::connect(&pipeline,&DataPipeline::priceReceived,[&](qint64 priceTicks, uint8_t exchangeId, qint64 /*ts*/) 
         {
+        if (exchangeId >= MAX_EXCHANGES) return;
         double price = priceTicks / 100000.0;
-        std::atomic_ref<double> ref(g_exchangePrices[exchangeId]);
-        ref.store(price, std::memory_order_relaxed);
+        g_exchangePrices[exchangeId].store(price, std::memory_order_relaxed);
         g_tradeCount++;
-        qDebug().noquote() << "Price received:" << g_exchangeNames[exchangeId] << price << Qt::flush;
+        static auto lastTime = std::chrono::steady_clock::now();
+        static uint64_t lastCount = 0;
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTime).count();
+    
+        if (elapsed >= 1000000) {  
+            uint64_t tps = (g_tradeCount.load() - lastCount) * 1000000 / elapsed;
+            qDebug() << "TPS:" << tps << "| Total:" << g_tradeCount.load();
+            lastTime = now;
+            lastCount = g_tradeCount.load();
+        }
+
+        update_market(&marketSnapshots[exchangeId], price);
+        strategy_on_tick(&strat, marketSnapshots, MAX_EXCHANGES);
+
+
+
+        const char* name = g_exchangeNames[exchangeId];
+        if (name) qDebug().noquote() << "Price received:" << name << price << Qt::flush;
+
         });
 
         
