@@ -109,7 +109,7 @@ int main(int argc, char *argv[])
         g_pipeline = &pipeline;
 
         Strategy strat;
-        strategy_init(&strat, marketSnapshots, MAX_EXCHANGES, 0.1, 0.001);
+        strategy_init(&strat, marketSnapshots, MAX_EXCHANGES, 10.0, 0.001);
 
         g_exchangeNames.assign(MAX_EXCHANGES, nullptr);
         
@@ -174,11 +174,11 @@ int main(int argc, char *argv[])
 });
 exitTimer.start();
 
-        QTimer pricePrinter;
-        pricePrinter.setInterval(1);  
-        QObject::connect(&pricePrinter, &QTimer::timeout, []() {
-            printAllPrices();
-        });
-        pricePrinter.start();
+        // QTimer pricePrinter;
+        // pricePrinter.setInterval(1);  
+        // QObject::connect(&pricePrinter, &QTimer::timeout, []() {
+        //     printAllPrices();
+        // });
+        // pricePrinter.start();
         return app.exec();
 } 
