@@ -4,18 +4,13 @@
 #include "../exchange/BaseExchange.h"
 #include "../datapipeline/datapipeline.h"
 
-/**
- * Signal Types for HFT Execution
- */
+
 enum class SignalType {
     BUY,
     SELL,
     NONE
 };
 
-/**
- * Strategy Output Signal
- */
 struct Signal {
     std::string symbol;
     SignalType type;
@@ -23,12 +18,6 @@ struct Signal {
     long long timestamp;
 };
 
-/**
- * ImbalanceStrategy - Microstructure Imbalance Logic
- * 
- * Computes the delta between bid and ask liquidity to predict
- * short-term price movements.
- */
 class ImbalanceStrategy {
 public:
     ImbalanceStrategy() = default;
