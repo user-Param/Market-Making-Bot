@@ -13,7 +13,7 @@ export default function Home() {
       <div className="h-screen flex">
           <Symbol/>
           <OrderHistory/>
-          <div className="h-full w-full border border-white">
+          <div className="h-full w-full">
             <Chart/>
             <PulseMap/>
             <ControlPannel/>

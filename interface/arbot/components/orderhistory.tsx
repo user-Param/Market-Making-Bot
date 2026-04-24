@@ -501,8 +501,13 @@ const OrderHistoryView = forwardRef(function OrderHistoryView(
 // ─── Wrapper for page ────────────────────────────────────────────────────────
 export default function OrderHistory() {
   return (
-    <div className="h-full w-[40%] text-sm border-r border-black">
+    <div className="h-full w-[40%] text-sm">
       <OrderHistoryView demo={true} />
     </div>
   );
 }
+
+
+
+
+

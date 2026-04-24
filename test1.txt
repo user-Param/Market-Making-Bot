@@ -1,0 +1,4312 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+datapipeline/
+  dataPipeline.cpp
+  dataPipeline.h
+exchange/
+  BaseExchange.h
+  Exchange1.cpp
+interface/
+  arbot/
+    app/
+      globals.css
+      layout.tsx
+      page.tsx
+    components/
+      chart.tsx
+      controlpannel.tsx
+      navbar.tsx
+      orderhistory.tsx
+      pulsemap.tsx
+      symbol.tsx
+    .gitignore
+    AGENTS.md
+    CLAUDE.md
+    eslint.config.mjs
+    next.config.ts
+    package.json
+    postcss.config.mjs
+    README.md
+    tsconfig.json
+.gitignore
+CMakeLists.txt
+main.cpp
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="datapipeline/dataPipeline.cpp">
+#include "dataPipeline.h"
+#include <iostream>
+#include <chrono>
+
+DataPipeline::~DataPipeline() {
+    stop();
+}
+
+void DataPipeline::register_exchange(std::shared_ptr<BaseExchange> exchange) {
+    std::lock_guard<std::mutex> lock(exchanges_mutex_);
+    
+    // Set callback to route data through pipeline
+    exchange->set_callback([this](const MarketData& data) {
+        process_market_data(data);
+    });
+    
+    exchanges_.push_back(exchange);
+    
+    std::cout << "[PIPELINE] Registered exchange: " << exchange->get_exchange_id() << std::endl;
+}
+
+void DataPipeline::start() {
+    if (running_) return;
+    
+    running_ = true;
+    
+    // Connect all exchanges
+    {
+        std::lock_guard<std::mutex> lock(exchanges_mutex_);
+        for (auto& exchange : exchanges_) {
+            exchange->connect();
+        }
+    }
+    
+    // Start pipeline processing thread
+    pipeline_thread_ = std::thread(&DataPipeline::pipeline_loop, this);
+    
+    std::cout << "[PIPELINE] Data pipeline started" << std::endl;
+}
+
+void DataPipeline::stop() {
+    running_ = false;
+    data_available_.notify_all();
+    
+    if (pipeline_thread_.joinable()) {
+        pipeline_thread_.join();
+    }
+    
+    std::cout << "[PIPELINE] Data pipeline stopped" << std::endl;
+}
+
+void DataPipeline::subscribe_all(const std::vector<std::string>& symbols) {
+    std::lock_guard<std::mutex> lock(exchanges_mutex_);
+    
+    for (auto& exchange : exchanges_) {
+        exchange->subscribe(symbols);
+    }
+    
+    std::cout << "[PIPELINE] Subscribed all exchanges to " << symbols.size() << " symbols" << std::endl;
+}
+
+void DataPipeline::set_data_handler(DataHandler handler) {
+    data_handler_ = std::move(handler);
+}
+
+void DataPipeline::process_market_data(const MarketData& data) {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    data_queue_.push(data);
+    data_available_.notify_one();
+}
+
+void DataPipeline::pipeline_loop() {
+    std::cout << "[PIPELINE] Processing loop started" << std::endl;
+    
+    while (running_) {
+        std::unique_lock<std::mutex> lock(queue_mutex_);
+        
+        // Wait for data or stop signal
+        data_available_.wait(lock, [this]() {
+            return !data_queue_.empty() || !running_;
+        });
+        
+        if (!running_) break;
+        
+        // Process all available data
+        while (!data_queue_.empty()) {
+            MarketData data = std::move(data_queue_.front());
+            data_queue_.pop();
+            lock.unlock();
+            
+            // Execute data handler if set
+            if (data_handler_) {
+                data_handler_(data);
+            } else {
+                // Default: Print data in standardized format
+                std::cout << "[DATA] " 
+                         << data.exchange_id << " | "
+                         << data.symbol << " | "
+                         << "P:" << data.price << " | "
+                         << "B:" << data.bid << "(" << data.bid_qty << ") | "
+                         << "A:" << data.ask << "(" << data.ask_qty << ") | "
+                         << "T:" << data.timestamp
+                         << std::endl;
+            }
+            
+            lock.lock();
+        }
+    }
+    
+    std::cout << "[PIPELINE] Processing loop ended" << std::endl;
+}
+</file>
+
+<file path="datapipeline/dataPipeline.h">
+#pragma once
+
+#include "../exchange/BaseExchange.h"
+#include <memory>
+#include <unordered_map>
+#include <mutex>
+#include <queue>
+#include <condition_variable>
+#include <thread>
+#include <functional>
+
+// Data Pipeline - Central data feed manager
+class DataPipeline {
+public:
+    using DataHandler = std::function<void(const MarketData&)>;
+    
+    static DataPipeline& get_instance() {
+        static DataPipeline instance;
+        return instance;
+    }
+    
+    // Register an exchange with the pipeline
+    void register_exchange(std::shared_ptr<BaseExchange> exchange);
+    
+    // Start the data pipeline
+    void start();
+    
+    // Stop the data pipeline
+    void stop();
+    
+    // Subscribe to symbols across all registered exchanges
+    void subscribe_all(const std::vector<std::string>& symbols);
+    
+    // Set custom data handler
+    void set_data_handler(DataHandler handler);
+
+private:
+    DataPipeline() = default;
+    ~DataPipeline();
+    
+    DataPipeline(const DataPipeline&) = delete;
+    DataPipeline& operator=(const DataPipeline&) = delete;
+    
+    // Process incoming market data
+    void process_market_data(const MarketData& data);
+    
+    // Pipeline processing thread
+    void pipeline_loop();
+    
+    std::vector<std::shared_ptr<BaseExchange>> exchanges_;
+    std::queue<MarketData> data_queue_;
+    std::mutex queue_mutex_;
+    std::condition_variable data_available_;
+    DataHandler data_handler_;
+    
+    std::thread pipeline_thread_;
+    std::atomic<bool> running_{false};
+    
+    mutable std::mutex exchanges_mutex_;
+};
+
+// Additional Exchange implementations can be added here
+// Example: Exchange2 (Binance), Exchange3 (Bybit), etc.
+</file>
+
+<file path="exchange/BaseExchange.h">
+#include "BaseExchange.h"
+#include <iostream>
+#include <chrono>
+#include <thread>
+#include <sstream>
+#include <algorithm>
+
+Exchange1::Exchange1() : connected_(false),
+                         work_guard_(net::make_work_guard(ioc_)) {
+    ctx_.set_verify_mode(ssl::verify_none);
+    ctx_.set_default_verify_paths();
+    
+    // Reset work guard initially - we'll set it properly in connect()
+    work_guard_.reset();
+}
+
+Exchange1::~Exchange1() {
+    running_ = false;
+    
+    // Reset work guard to allow io_context to stop
+    work_guard_.reset();
+    
+    // Stop the io_context
+    ioc_.stop();
+    
+    if (io_thread_.joinable()) io_thread_.join();
+    if (polling_thread_.joinable()) polling_thread_.join();
+}
+
+void Exchange1::connect() {
+    if (connected_) return;
+    
+    connected_ = true;
+    running_ = true;
+    
+    // Reset io_context state before starting
+    ioc_.restart();
+    
+    // Create work guard to keep io_context running
+    work_guard_ = net::make_work_guard(ioc_);
+    
+    // Start IO thread
+    io_thread_ = std::thread([this]() {
+        while (running_) {
+            try {
+                ioc_.run();
+                break; // run() exited normally
+            } catch (const std::exception& e) {
+                std::cerr << "[JUPITER] IO context error: " << e.what() << std::endl;
+                if (!running_) break;
+                
+                // Restart io_context if it stopped unexpectedly
+                ioc_.restart();
+                work_guard_ = net::make_work_guard(ioc_);
+            }
+        }
+    });
+    
+    std::cout << "[JUPITER] Connected to API" << std::endl;
+    
+    // Start polling thread
+    polling_thread_ = std::thread(&Exchange1::polling_loop, this);
+}
+
+void Exchange1::subscribe(const std::vector<std::string>& symbols) {
+    if (!connected_) {
+        std::cerr << "[JUPITER] Not connected. Call connect() first." << std::endl;
+        return;
+    }
+    
+    {
+        std::lock_guard<std::mutex> lock(symbols_mutex_);
+        subscribed_symbols_ = symbols;
+    }
+    
+    std::cout << "[JUPITER] Subscribed to: ";
+    for (const auto& s : symbols) std::cout << s << " ";
+    std::cout << std::endl;
+    
+    // Fetch market addresses for symbols
+    fetch_perp_markets();
+}
+
+void Exchange1::set_callback(PriceCallback callback) {
+    callback_ = std::move(callback);
+}
+
+void Exchange1::polling_loop() {
+    // Give time for market addresses to be fetched
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    
+    while (running_ && connected_) {
+        try {
+            std::vector<std::string> symbols;
+            {
+                std::lock_guard<std::mutex> lock(symbols_mutex_);
+                symbols = subscribed_symbols_;
+            }
+            
+            if (symbols.empty()) {
+                // No symbols subscribed yet, wait and retry
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                continue;
+            }
+            
+            for (const auto& symbol : symbols) {
+                std::string market_address;
+                {
+                    std::lock_guard<std::mutex> lock(symbols_mutex_);
+                    auto it = symbol_to_address_.find(symbol);
+                    if (it != symbol_to_address_.end()) {
+                        market_address = it->second;
+                    }
+                }
+                
+                if (!market_address.empty()) {
+                    fetch_perp_prices(market_address);
+                } else {
+                    std::cerr << "[JUPITER] No market address for symbol: " << symbol << std::endl;
+                }
+            }
+            
+            // Poll every 500ms (2 times per second)
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            
+        } catch (const std::exception& e) {
+            std::cerr << "[JUPITER] Polling error: " << e.what() << std::endl;
+            if (!running_) break;
+            
+            // Add delay before retry on error
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
+    
+    std::cout << "[JUPITER] Polling loop ended" << std::endl;
+}
+
+void Exchange1::fetch_perp_markets() {
+    // Jupiter API endpoint to get perpetual markets
+    std::string endpoint = "/api/perpetuals";
+    
+    make_http_request(endpoint, [this](nlohmann::json response) {
+        try {
+            std::lock_guard<std::mutex> lock(symbols_mutex_);
+            
+            if (response.is_array()) {
+                for (const auto& market : response) {
+                    if (market.contains("symbol") && market.contains("pubkey")) {
+                        std::string symbol = market["symbol"].get<std::string>();
+                        std::string address = market["pubkey"].get<std::string>();
+                        
+                        symbol_to_address_[symbol] = address;
+                        std::cout << "[JUPITER] Mapped " << symbol << " -> " << address << std::endl;
+                    }
+                }
+            } else if (response.is_object()) {
+                if (response.contains("data") && response["data"].is_array()) {
+                    for (const auto& market : response["data"]) {
+                        if (market.contains("symbol") && market.contains("pubkey")) {
+                            std::string symbol = market["symbol"].get<std::string>();
+                            std::string address = market["pubkey"].get<std::string>();
+                            
+                            symbol_to_address_[symbol] = address;
+                        }
+                    }
+                }
+            }
+            
+            std::cout << "[JUPITER] Loaded " << symbol_to_address_.size() << " market addresses" << std::endl;
+            
+        } catch (const std::exception& e) {
+            std::cerr << "[JUPITER] Error parsing markets: " << e.what() << std::endl;
+        }
+    });
+}
+
+void Exchange1::fetch_perp_prices(const std::string& market_address) {
+    // Jupiter price endpoint
+    std::string endpoint = "/api/price?ids=" + market_address;
+    
+    make_http_request(endpoint, [this, market_address](nlohmann::json response) {
+        try {
+            MarketData data;
+            data.exchange_id = "JUPITER";
+            data.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+            ).count();
+            
+            // Find symbol for this market address
+            {
+                std::lock_guard<std::mutex> lock(symbols_mutex_);
+                for (const auto& [sym, addr] : symbol_to_address_) {
+                    if (addr == market_address) {
+                        data.symbol = sym;
+                        break;
+                    }
+                }
+            }
+            
+            if (data.symbol.empty()) {
+                std::cerr << "[JUPITER] Unknown market address: " << market_address << std::endl;
+                return;
+            }
+            
+            // Parse Jupiter price response format
+            if (response.contains("data") && response["data"].contains(market_address)) {
+                auto& price_data = response["data"][market_address];
+                
+                data.price = price_data.value("price", 0.0);
+                data.bid = price_data.value("bid", 0.0);
+                data.ask = price_data.value("ask", 0.0);
+                data.bid_qty = price_data.value("bid_size", 
+                            price_data.value("bidQty", 0.0));
+                data.ask_qty = price_data.value("ask_size", 
+                            price_data.value("askQty", 0.0));
+                
+                if (callback_) {
+                    callback_(data);
+                }
+            } else {
+                // Alternative format: direct price object
+                if (response.contains("price")) {
+                    data.price = response["price"].get<double>();
+                    data.bid = data.price * 0.999;
+                    data.ask = data.price * 1.001;
+                    
+                    if (callback_) {
+                        callback_(data);
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[JUPITER] Error parsing price data: " << e.what() << std::endl;
+        }
+    });
+}
+
+void Exchange1::make_http_request(const std::string& endpoint, 
+                                  std::function<void(nlohmann::json)> handler) {
+    // Post work to io_context
+    net::post(ioc_, [this, endpoint, handler]() {
+        try {
+            // Create TCP socket
+            tcp::socket socket(ioc_);
+            ssl::stream<tcp::socket&> ssl_stream(socket, ctx_);
+            
+            // Resolve host
+            tcp::resolver resolver(ioc_);
+            auto const results = resolver.resolve(host_, port_);
+            
+            // Connect
+            net::connect(ssl_stream.lowest_layer(), results);
+            
+            // SSL handshake
+            ssl_stream.handshake(ssl::stream_base::client);
+            
+            // Create HTTP request
+            http::request<http::string_body> req{http::verb::get, endpoint, 11};
+            req.set(http::field::host, host_);
+            req.set(http::field::user_agent, "Boost Beast Client/1.0");
+            req.set(http::field::accept, "application/json");
+            req.set(http::field::connection, "close");
+            
+            // Send request
+            http::write(ssl_stream, req);
+            
+            // Read response
+            beast::flat_buffer buffer;
+            http::response<http::dynamic_body> res;
+            http::read(ssl_stream, buffer, res);
+            
+            // Process response
+            process_http_response(buffer, res, handler);
+            
+            // Graceful shutdown
+            beast::error_code ec;
+            ssl_stream.shutdown(ec);
+            if(ec && ec != net::error::eof) {
+                // Don't throw on EOF - it's expected
+                std::cerr << "[JUPITER] SSL shutdown error: " << ec.message() << std::endl;
+            }
+            
+        } catch (const std::exception& e) {
+            std::cerr << "[JUPITER] HTTP request error for " << endpoint << ": " << e.what() << std::endl;
+        }
+    });
+}
+
+void Exchange1::process_http_response(beast::flat_buffer& buffer, 
+                                     http::response<http::dynamic_body>& res,
+                                     std::function<void(nlohmann::json)> handler) {
+    try {
+        // Check response status
+        if (res.result() != http::status::ok) {
+            std::cerr << "[JUPITER] HTTP error: " << res.result_int() << " " 
+                     << res.reason() << std::endl;
+            return;
+        }
+        
+        // Convert response body to string
+        std::string body = beast::buffers_to_string(res.body().data());
+        
+        if (body.empty()) {
+            std::cerr << "[JUPITER] Empty response body" << std::endl;
+            return;
+        }
+        
+        // Parse JSON
+        try {
+            auto json_response = nlohmann::json::parse(body);
+            handler(json_response);
+        } catch (const nlohmann::json::parse_error& e) {
+            std::cerr << "[JUPITER] JSON parse error: " << e.what() << std::endl;
+            std::cerr << "[JUPITER] Response body (first 200 chars): " << body.substr(0, 200) << "..." << std::endl;
+        }
+        
+    } catch (const std::exception& e) {
+        std::cerr << "[JUPITER] Error processing response: " << e.what() << std::endl;
+    }
+}
+</file>
+
+<file path="exchange/Exchange1.cpp">
+#include "BaseExchange.h"
+#include <iostream>
+#include <chrono>
+#include <thread>
+#include <sstream>
+#include <algorithm>
+
+Exchange1::Exchange1() : connected_(false), work_guard_(net::make_work_guard(ioc_)) {
+    ctx_.set_verify_mode(ssl::verify_none);
+    ctx_.set_default_verify_paths();
+
+    work_guard_.reset();
+}
+
+Exchange1::~Exchange1() {
+    running_ = false;
+    
+    // Cancel all pending operations
+    ioc_.stop();
+    
+    if (io_thread_.joinable()) io_thread_.join();
+    if (polling_thread_.joinable()) polling_thread_.join();
+}
+
+void Exchange1::connect() {
+    if (connected_) return;
+    
+    connected_ = true;
+    running_ = true;
+    
+    ioc_.restart();
+    
+    work_guard_ = net::make_work_guard(ioc_);
+    
+    // Start IO thread
+    io_thread_ = std::thread([this]() {
+        while (running_) {
+            try {
+                ioc_.run();
+                break;
+            } catch (const std::exception& e) {
+                std::cerr << "[JUPITER] IO context error: " << e.what() << std::endl;
+            }
+        }
+    });
+    
+    std::cout << "[JUPITER] Connected to API" << std::endl;
+    
+    // Start polling thread
+    polling_thread_ = std::thread(&Exchange1::polling_loop, this);
+}
+
+void Exchange1::subscribe(const std::vector<std::string>& symbols) {
+    if (!connected_) {
+        std::cerr << "[JUPITER] Not connected. Call connect() first." << std::endl;
+        return;
+    }
+    
+    {
+        std::lock_guard<std::mutex> lock(symbols_mutex_);
+        subscribed_symbols_ = symbols;
+    }
+    
+    std::cout << "[JUPITER] Subscribed to: ";
+    for (const auto& s : symbols) std::cout << s << " ";
+    std::cout << std::endl;
+    
+    // Fetch market addresses for symbols
+    fetch_perp_markets();
+}
+
+void Exchange1::set_callback(PriceCallback callback) {
+    callback_ = std::move(callback);
+}
+
+void Exchange1::polling_loop() {
+    // First fetch market addresses
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    while (running_ && connected_) {
+        try {
+            std::vector<std::string> symbols;
+            {
+                std::lock_guard<std::mutex> lock(symbols_mutex_);
+                symbols = subscribed_symbols_;
+            }
+            
+            for (const auto& symbol : symbols) {
+                // Check if we have the market address
+                if (symbol_to_address_.find(symbol) != symbol_to_address_.end()) {
+                    fetch_perp_prices(symbol_to_address_[symbol]);
+                }
+            }
+            
+            // Poll every 500ms (2 times per second)
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            
+        } catch (const std::exception& e) {
+            std::cerr << "[JUPITER] Polling error: " << e.what() << std::endl;
+            if (!running_) break;
+        }
+    }
+    
+    std::cout << "[JUPITER] Polling loop ended" << std::endl;
+}
+
+void Exchange1::fetch_perp_markets() {
+    // Jupiter API endpoint to get perpetual markets
+    make_http_request("/perpetuals", [this](nlohmann::json response) {
+        try {
+            if (response.contains("data")) {
+                for (const auto& market : response["data"]) {
+                    std::string symbol = market["symbol"].get<std::string>();
+                    std::string address = market["address"].get<std::string>();
+                    
+                    symbol_to_address_[symbol] = address;
+                    std::cout << "[JUPITER] Mapped " << symbol << " -> " << address << std::endl;
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[JUPITER] Error parsing markets: " << e.what() << std::endl;
+        }
+    });
+}
+
+void Exchange1::fetch_perp_prices(const std::string& market_address) {
+    // Jupiter API endpoint to get price data for a specific market
+    std::string endpoint = "/price?id=" + market_address;
+    
+    make_http_request(endpoint, [this, market_address](nlohmann::json response) {
+        try {
+            MarketData data;
+            data.exchange_id = "JUPITER";
+            data.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+            ).count();
+            
+            // Find symbol for this market address
+            for (const auto& [sym, addr] : symbol_to_address_) {
+                if (addr == market_address) {
+                    data.symbol = sym;
+                    break;
+                }
+            }
+            
+            if (response.contains("data")) {
+                auto& price_data = response["data"];
+                data.price = price_data.value("price", 0.0);
+                data.bid = price_data.value("bid", 0.0);
+                data.ask = price_data.value("ask", 0.0);
+                data.bid_qty = price_data.value("bidQty", 0.0);
+                data.ask_qty = price_data.value("askQty", 0.0);
+                
+                if (callback_) {
+                    callback_(data);
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[JUPITER] Error parsing price data: " << e.what() << std::endl;
+        }
+    });
+}
+
+void Exchange1::make_http_request(const std::string& endpoint, 
+                                  std::function<void(nlohmann::json)> handler) {
+    // Post work to io_context
+    net::post(ioc_, [this, endpoint, handler]() {
+        try {
+            // Create SSL stream
+            auto ssl_stream = std::make_shared<ssl::stream<tcp::socket>>(
+                ioc_, ctx_);
+            
+            // Resolve host
+            tcp::resolver resolver(ioc_);
+            auto const results = resolver.resolve(host_, port_);
+            
+            // Connect
+            net::connect(ssl_stream->lowest_layer(), results);
+            
+            // SSL handshake
+            ssl_stream->handshake(ssl::stream_base::client);
+            
+            // Create HTTP request
+            http::request<http::string_body> req{http::verb::get, endpoint, 11};
+            req.set(http::field::host, host_);
+            req.set(http::field::user_agent, "Boost Beast Client");
+            req.set(http::field::accept, "application/json");
+            
+            // Send request
+            http::write(*ssl_stream, req);
+            
+            // Read response
+            beast::flat_buffer buffer;
+            http::response<http::dynamic_body> res;
+            http::read(*ssl_stream, buffer, res);
+            
+            // Process response
+            process_http_response(buffer, res, handler);
+            
+            // Graceful shutdown
+            beast::error_code ec;
+            ssl_stream->shutdown(ec);
+            
+        } catch (const std::exception& e) {
+            std::cerr << "[JUPITER] HTTP request error: " << e.what() << std::endl;
+        }
+    });
+}
+
+void Exchange1::process_http_response(beast::flat_buffer& buffer, 
+                                     http::response<http::dynamic_body>& res,
+                                     std::function<void(nlohmann::json)> handler) {
+    try {
+        // Convert response body to string
+        std::string body = beast::buffers_to_string(res.body().data());
+        
+        // Parse JSON
+        auto json_response = nlohmann::json::parse(body);
+        
+        // Call handler with parsed JSON
+        handler(json_response);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "[JUPITER] Error processing response: " << e.what() << std::endl;
+    }
+}
+</file>
+
+<file path="interface/arbot/app/globals.css">
+@import "tailwindcss";
+
+
+/* Hide scrollbar but allow scrolling */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;  /* IE + Edge */
+  scrollbar-width: none;     /* Firefox */
+}
+</file>
+
+<file path="interface/arbot/app/layout.tsx">
+import type { Metadata } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import "./globals.css";
+
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
+
+export const metadata: Metadata = {
+  title: "Arb-Bot Terminal",
+  description: "High-frequency crypto arbitrage market-making dashboard",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html
+      lang="en"
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+    >
+      <body className="min-h-full flex flex-col">{children}</body>
+    </html>
+  );
+}
+</file>
+
+<file path="interface/arbot/app/page.tsx">
+"use client"
+import Chart from "@/components/chart"
+import ControlPannel from "@/components/controlpannel"
+import Navbar from "@/components/navbar"
+import OrderHistory from "@/components/orderhistory"
+import PulseMap from "@/components/pulsemap"
+import Symbol from "@/components/symbol"
+
+export default function Home() {
+  return (
+    <>
+      <Navbar/>
+      <div className="h-screen flex">
+          <Symbol/>
+          <OrderHistory/>
+          <div className="h-full w-full">
+            <Chart/>
+            <PulseMap/>
+            <ControlPannel/>
+          </div>
+      </div>
+    </>
+    )}
+</file>
+
+<file path="interface/arbot/components/chart.tsx">
+import { useState, useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
+
+// ─── Constants ─────────────────────────────────────────────────────────────────
+const MAX_TICKS   = 300;
+const TICK_MS     = 100;
+const OB_LEVELS   = 16;
+const DOT_R       = 2.2;
+const BUY_COLOR   = "#00ff84";
+const SELL_COLOR  = "#ff002b";
+const BG_COLOR    = "#000000";
+const GRID_COLOR = "rgba(0,0,0,0.06)";
+const LINE_COLOR = "rgba(0,0,0,0.25)";
+const AXIS_COLOR = "rgba(0,0,0,0.6)";
+const PRICE_COLOR = "#000000";
+
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+const fmt2 = (n) => n.toFixed(2);
+const fmt0 = (n) => Math.round(n).toLocaleString();
+const padTime = (n) => String(n).padStart(2, "0");
+const timeLabel = (d) =>
+  `${padTime(d.getHours())}:${padTime(d.getMinutes())}:${padTime(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, "0").slice(0, 2)}`;
+
+// ─── Simulator (demo only) ─────────────────────────────────────────────────────
+function makeTick(mid) {
+  const spread = 0.25;
+  const buyP   = mid - spread;
+  const sellP  = mid + spread;
+  const isBuy  = Math.random() > 0.48;
+  const bids   = Array.from({ length: OB_LEVELS }, (_, j) => ({
+    price: +(mid - (j + 1) * 0.5).toFixed(2),
+    qty:   Math.floor(Math.random() * 900 + 80),
+  }));
+  const asks   = Array.from({ length: OB_LEVELS }, (_, j) => ({
+    price: +(mid + (j + 1) * 0.5).toFixed(2),
+    qty:   Math.floor(Math.random() * 900 + 80),
+  }));
+  return { buyP, sellP, isBuy, price: isBuy ? buyP : sellP, bids, asks };
+}
+
+// ─── Canvas renderer ───────────────────────────────────────────────────────────
+function drawChart(canvas, ticks) {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width;
+  const H = canvas.height;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = BG_COLOR;
+  ctx.fillRect(0, 0, W, H);
+
+  if (ticks.length < 2) return;
+
+  const PL = 68, PR = 6, PT = 14, PB = 26;
+  const CW = W - PL - PR;
+  const CH = H - PT - PB;
+
+  const prices = ticks.map((t) => t.price);
+  const lo     = Math.min(...prices) - 4;
+  const hi     = Math.max(...prices) + 4;
+  const range  = hi - lo || 1;
+
+  const py = (p) => PT + CH - ((p - lo) / range) * CH;
+  const px = (i) => PL + (i / (MAX_TICKS - 1)) * CW;
+
+  // ── Grid lines ──────────────────────────────────────────────────────────────
+  const ROWS = 8, COLS = 10;
+  ctx.strokeStyle = GRID_COLOR;
+  ctx.lineWidth   = 0.5;
+  for (let i = 0; i <= ROWS; i++) {
+    const y = PT + (i / ROWS) * CH;
+    ctx.beginPath(); ctx.moveTo(PL, y); ctx.lineTo(W - PR, y); ctx.stroke();
+  }
+  for (let i = 0; i <= COLS; i++) {
+    const x = PL + (i / COLS) * CW;
+    ctx.beginPath(); ctx.moveTo(x, PT); ctx.lineTo(x, PT + CH); ctx.stroke();
+  }
+
+  // ── Price axis labels ────────────────────────────────────────────────────────
+  ctx.fillStyle  = AXIS_COLOR;
+  ctx.font       = '9.5px "Courier New", monospace';
+  ctx.textAlign  = "right";
+  for (let i = 0; i <= ROWS; i++) {
+    const p = lo + ((ROWS - i) / ROWS) * range;
+    const y = PT + (i / ROWS) * CH;
+    ctx.fillText(fmt2(p), PL - 4, y + 3.5);
+  }
+
+  // ── Thin connecting line ─────────────────────────────────────────────────────
+  const startI = MAX_TICKS - ticks.length;
+  ctx.beginPath();
+  ctx.strokeStyle = LINE_COLOR;
+  ctx.lineWidth   = 0.7;
+  ticks.forEach((t, i) => {
+    const x = px(startI + i), y = py(t.price);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // ── Dots ─────────────────────────────────────────────────────────────────────
+  ticks.forEach((t, i) => {
+    const x = px(startI + i), y = py(t.price);
+    ctx.beginPath();
+    ctx.arc(x, y, DOT_R, 0, Math.PI * 2);
+    ctx.fillStyle = t.isBuy ? BUY_COLOR : SELL_COLOR;
+    ctx.fill();
+  });
+
+  // ── Latest price dashed line ──────────────────────────────────────────────────
+  const last = ticks[ticks.length - 1];
+  if (last) {
+    const y = py(last.price);
+    ctx.strokeStyle = "rgba(245,197,24,0.38)";
+    ctx.lineWidth   = 0.6;
+    ctx.setLineDash([4, 6]);
+    ctx.beginPath(); ctx.moveTo(PL, y); ctx.lineTo(W - PR, y); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Right edge price tag
+    ctx.fillStyle  = PRICE_COLOR;
+    ctx.font       = 'bold 9px "Courier New", monospace';
+    ctx.textAlign  = "left";
+    ctx.fillText(fmt2(last.price), W - PR + 2, y + 3.5);
+  }
+
+  // ── X-axis time labels ───────────────────────────────────────────────────────
+  ctx.fillStyle = "rgba(90,110,135,0.5)";
+  ctx.font      = '8.5px "Courier New", monospace';
+  ctx.textAlign = "center";
+  const now = Date.now();
+  for (let i = 0; i <= 4; i++) {
+    const x     = PL + (i / 4) * CW;
+    const msAgo = ((4 - i) / 4) * ticks.length * TICK_MS;
+    ctx.fillText(timeLabel(new Date(now - msAgo)), x, PT + CH + 16);
+  }
+}
+
+// ─── Orderbook Row ─────────────────────────────────────────────────────────────
+function OBRow({ price, qty, maxQty, side }) {
+  const pct   = Math.min((qty / maxQty) * 100, 100);
+  const color = side === "ask" ? SELL_COLOR : BUY_COLOR;
+  const bg    = side === "ask" ? "rgba(255,58,92,0.09)" : "rgba(0,230,118,0.09)";
+  return (
+    <div style={{ position: "relative", display: "flex", justifyContent: "space-between", padding: "1.5px 8px", lineHeight: 1.4 }}>
+      <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, background: bg, width: `${pct}%`, pointerEvents: "none" }} />
+      <span style={{ color, fontSize: 10.5, fontVariantNumeric: "tabular-nums", zIndex: 1 }}>{fmt2(price)}</span>
+      <span style={{ color: "rgba(150,165,185,0.7)", fontSize: 10, zIndex: 1 }}>{fmt0(qty)}</span>
+    </div>
+  );
+}
+
+// ─── Header Stats ──────────────────────────────────────────────────────────────
+function Header({ price, change, pct, buys, sells, symbol }) {
+  const up = change >= 0;
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 20, padding: "6px 14px",
+      borderBottom: "1px solid rgba(255,255,255,0.055)",
+      background: "rgba(255,255,255,0.012)", flexShrink: 0,
+    }}>
+      <span style={{ color: "#e8ecf0", fontWeight: "bold", fontSize: 13, letterSpacing: 0.5 }}>{symbol}</span>
+      <span style={{ color: up ? BUY_COLOR : SELL_COLOR, fontSize: 17, fontWeight: "bold", fontVariantNumeric: "tabular-nums" }}>
+        {fmt2(price)}
+      </span>
+      <span style={{ color: up ? BUY_COLOR : SELL_COLOR, fontSize: 11 }}>
+        {up ? "+" : ""}{fmt2(change)} ({up ? "+" : ""}{pct.toFixed(3)}%)
+      </span>
+
+      <div style={{ marginLeft: "auto", display: "flex", gap: 18, alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: BUY_COLOR, display: "inline-block" }} />
+          <span style={{ color: BUY_COLOR, fontSize: 11 }}>{buys} buys</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: SELL_COLOR, display: "inline-block" }} />
+          <span style={{ color: SELL_COLOR, fontSize: 11 }}>{sells} sells</span>
+        </div>
+        <span style={{ color: "rgba(120,140,165,0.6)", fontSize: 10, borderLeft: "1px solid rgba(255,255,255,0.06)", paddingLeft: 14 }}>
+          100ms · LIVE
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Component ────────────────────────────────────────────────────────────
+/**
+ * HFTChart — High-Frequency Trading Chart
+ *
+ * Usage (controlled / real data):
+ *   const ref = useRef();
+ *   ref.current.addTick(buyPrice, sellPrice, bids, asks);
+ *   // bids / asks = [{ price: number, qty: number }, ...]
+ *
+ * <HFTChart ref={ref} symbol="BTC/USDT" demo={false} />
+ *
+ * Leave demo={true} (default) for the built-in simulator.
+ */
+const HFTChart = forwardRef(function HFTChart({ symbol = "BTC/USDT", demo = true }, ref) {
+  const canvasRef  = useRef(null);
+  const stateRef   = useRef({ ticks: [], bids: [], asks: [], mid: 74250, rafId: null });
+  const [ob, setOb] = useState({ bids: [], asks: [] });
+  const [hdr, setHdr] = useState({ price: 74250, change: 0, pct: 0, buys: 0, sells: 0 });
+
+  // ── Public API ────────────────────────────────────────────────────────────────
+  const addTick = useCallback((buyP, sellP, bids, asks) => {
+    const s = stateRef.current;
+    const isBuy = Math.random() > 0.48;
+    const price  = isBuy ? buyP : sellP;
+
+    s.ticks.push({ price, isBuy, ts: Date.now() });
+    if (s.ticks.length > MAX_TICKS) s.ticks.shift();
+    s.bids = bids || [];
+    s.asks = asks || [];
+
+    const first = s.ticks[0]?.price || price;
+    setOb({ bids: s.bids, asks: s.asks });
+    setHdr({
+      price,
+      change: +(price - first).toFixed(2),
+      pct:    +((price / first - 1) * 100).toFixed(4),
+      buys:   s.ticks.filter((t) => t.isBuy).length,
+      sells:  s.ticks.filter((t) => !t.isBuy).length,
+    });
+  }, []);
+
+  useImperativeHandle(ref, () => ({ addTick }), [addTick]);
+
+  // ── Demo simulator ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!demo) return;
+    const s = stateRef.current;
+
+    // pre-fill history
+    for (let i = 0; i < 90; i++) {
+      s.mid += (Math.random() - 0.499) * 1.8;
+      const { buyP, sellP, bids, asks } = makeTick(s.mid);
+      addTick(buyP, sellP, bids, asks);
+    }
+
+    const id = setInterval(() => {
+      s.mid += (Math.random() - 0.499) * 2.5;
+      const { buyP, sellP, bids, asks } = makeTick(s.mid);
+      addTick(buyP, sellP, bids, asks);
+    }, TICK_MS);
+
+    return () => clearInterval(id);
+  }, [demo, addTick]);
+
+  // ── Render loop ───────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const s = stateRef.current;
+    const frame = () => {
+      drawChart(canvasRef.current, s.ticks);
+      s.rafId = requestAnimationFrame(frame);
+    };
+    frame();
+    return () => cancelAnimationFrame(s.rafId);
+  }, []);
+
+  // ── Resize observer ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ro = new ResizeObserver(() => {
+      canvas.width  = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+    });
+    ro.observe(canvas);
+    canvas.width  = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+    return () => ro.disconnect();
+  }, []);
+
+  // ── Orderbook derived data ────────────────────────────────────────────────────
+  const maxQty = Math.max(...ob.bids.map((b) => b.qty), ...ob.asks.map((a) => a.qty), 1);
+  const asksDisplay = [...ob.asks].slice(0, OB_LEVELS).reverse();
+  const bidsDisplay = ob.bids.slice(0, OB_LEVELS);
+
+  return (
+    <div style={{
+      background: BG_COLOR,
+      color: "#c8d4e0",
+      fontFamily: '"Courier New", Courier, monospace',
+      height: "100%",
+      display: "flex",
+      flexDirection: "column",
+      overflow: "hidden",
+      userSelect: "none",
+    }}>
+      <Header {...hdr} symbol={symbol} />
+
+      <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
+
+        {/* ── Chart canvas ──────────────────────────────────────────────────── */}
+        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+          <canvas
+            ref={canvasRef}
+            style={{ display: "block", width: "100%", height: "100%" }}
+          />
+          {/* Legend */}
+          <div style={{
+            position: "absolute", top: 10, left: 76, display: "flex", gap: 12,
+            fontSize: 10, color: "rgba(160,175,195,0.7)",
+          }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: BUY_COLOR, display: "inline-block" }} />
+              BUY
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: SELL_COLOR, display: "inline-block" }} />
+              SELL
+            </span>
+          </div>
+        </div>
+
+        {/* ── Orderbook panel ────────────────────────────────────────────────── */}
+        <div style={{
+          width: 188,
+          borderLeft: "1px solid rgba(255,255,255,0.055)",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          flexShrink: 0,
+        }}>
+          {/* Column header */}
+          <div style={{
+            display: "flex", justifyContent: "space-between", padding: "3px 8px 3px",
+            borderBottom: "1px solid rgba(255,255,255,0.04)",
+            color: "rgba(120,140,165,0.55)", fontSize: 9.5, flexShrink: 0,
+          }}>
+            <span>PRICE (USDT)</span><span>QTY</span>
+          </div>
+
+          {/* Asks */}
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", overflow: "hidden" }}>
+            {asksDisplay.map((a, i) => (
+              <OBRow key={i} price={a.price} qty={a.qty} maxQty={maxQty} side="ask" />
+            ))}
+          </div>
+
+          {/* Mid price separator */}
+          <div style={{
+            padding: "4px 8px", flexShrink: 0,
+            borderTop: "1px solid rgba(255,255,255,0.05)",
+            borderBottom: "1px solid rgba(255,255,255,0.05)",
+            background: "rgba(245,197,24,0.05)",
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+          }}>
+            <span style={{ color: PRICE_COLOR, fontSize: 11, fontWeight: "bold" }}>{fmt2(hdr.price)}</span>
+            <span style={{ color: hdr.change >= 0 ? BUY_COLOR : SELL_COLOR, fontSize: 9 }}>
+              {hdr.change >= 0 ? "▲" : "▼"} {Math.abs(hdr.change).toFixed(2)}
+            </span>
+          </div>
+
+          {/* Bids */}
+          <div style={{ flex: 1, overflow: "hidden" }}>
+            {bidsDisplay.map((b, i) => (
+              <OBRow key={i} price={b.price} qty={b.qty} maxQty={maxQty} side="bid" />
+            ))}
+          </div>
+
+          {/* Footer */}
+          <div style={{
+            padding: "3px 8px", flexShrink: 0,
+            borderTop: "1px solid rgba(255,255,255,0.04)",
+            display: "flex", justifyContent: "space-between",
+            color: "rgba(100,120,145,0.55)", fontSize: 9,
+          }}>
+            <span>ORDERBOOK</span>
+            <span>LIVE</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+
+
+
+
+
+
+
+
+
+
+export default function Chart() {
+    return(
+        <>
+        <div className="h-[40%] border-b text-sm">
+            <HFTChart demo={true} symbol="BTC/USDT" />
+        </div>
+        </>
+    )
+}
+</file>
+
+<file path="interface/arbot/components/controlpannel.tsx">
+// interface/arbot/components/controlpannel.tsx
+
+"use client";
+
+import { useState, useCallback } from "react";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const EXCHANGES = ["Binance", "Bybit", "Kraken", "Coinbase", "OKX"];
+const STRATEGIES = [
+  { id: "simple_spread", label: "Simple Spread" },
+  { id: "momentum", label: "Momentum" },
+  { id: "mean_rev", label: "Mean Reversion" },
+  { id: "triangular", label: "Triangular Arb" },
+];
+
+// ─── Styling helpers (inline) ─────────────────────────────────────────────────
+const styles = {
+  container: {
+    background: "#07090c",
+    color: "#c8d4e0",
+    fontFamily: '"Courier New", Courier, monospace',
+    height: "100%",
+    display: "flex",
+    flexDirection: "column" as const,
+    overflow: "hidden",
+    userSelect: "none" as const,
+    borderTop: "1px solid rgba(255,255,255,0.055)",
+  },
+  tabBar: {
+    display: "flex",
+    borderBottom: "1px solid rgba(255,255,255,0.06)",
+    background: "rgba(255,255,255,0.012)",
+    flexShrink: 0,
+  },
+  tab: (active: boolean) => ({
+    padding: "6px 14px",
+    fontSize: 11,
+    fontWeight: active ? "bold" as const : "normal" as const,
+    color: active ? "#00e676" : "rgba(150,165,185,0.7)",
+    borderBottom: active ? "2px solid #00e676" : "2px solid transparent",
+    cursor: "pointer",
+    background: active ? "rgba(0,230,118,0.05)" : "transparent",
+    transition: "all 0.2s",
+  }),
+  content: {
+    flex: 1,
+    overflowY: "auto" as const,
+    overflowX: "hidden" as const,
+    padding: "10px 14px",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 12,
+  },
+  sectionTitle: {
+    color: "rgba(120,140,165,0.6)",
+    fontSize: 9.5,
+    textTransform: "uppercase" as const,
+    letterSpacing: 1.2,
+    marginBottom: 6,
+  },
+  row: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  label: {
+    color: "rgba(150,165,185,0.8)",
+    fontSize: 10,
+  },
+  input: {
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.1)",
+    color: "#e0e6f0",
+    padding: "5px 8px",
+    fontSize: 10.5,
+    fontFamily: "inherit",
+    borderRadius: 3,
+    width: 80,
+    outline: "none",
+  },
+  button: (bgColor: string, textColor: string = "#000") => ({
+    background: bgColor,
+    color: textColor,
+    border: "none",
+    padding: "6px 14px",
+    fontSize: 10.5,
+    fontWeight: "bold" as const,
+    fontFamily: "inherit",
+    borderRadius: 3,
+    cursor: "pointer",
+    letterSpacing: 0.5,
+    transition: "opacity 0.2s",
+  }),
+  toggleBase: {
+    position: "relative" as const,
+    width: 36,
+    height: 18,
+    borderRadius: 9,
+    background: "rgba(255,255,255,0.15)",
+    cursor: "pointer",
+    transition: "background 0.2s",
+  },
+  toggleKnob: (on: boolean) => ({
+    position: "absolute" as const,
+    top: 2,
+    left: on ? 19 : 2,
+    width: 14,
+    height: 14,
+    borderRadius: "50%",
+    background: on ? "#00e676" : "#ff4d6a",
+    transition: "left 0.2s",
+  }),
+  killButton: {
+    marginTop: "auto",
+    alignSelf: "center",
+    background: "rgba(255,0,43,0.15)",
+    border: "1px solid #ff002b",
+    color: "#ff4d6a",
+    padding: "10px 30px",
+    fontSize: 12,
+    fontWeight: "bold" as const,
+    fontFamily: "inherit",
+    borderRadius: 4,
+    cursor: "pointer",
+    letterSpacing: 1.2,
+    transition: "background 0.15s",
+  },
+  log: {
+    background: "rgba(0,0,0,0.3)",
+    padding: "4px 8px",
+    borderRadius: 3,
+    fontSize: 9,
+    color: "rgba(150,165,185,0.7)",
+    maxHeight: 80,
+    overflowY: "auto" as const,
+  },
+};
+
+// ─── Exchange Toggle Component ─────────────────────────────────────────────────
+function ExchangeToggle({ name, enabled, onToggle }: { name: string; enabled: boolean; onToggle: () => void }) {
+  return (
+    <div style={styles.row}>
+      <span style={styles.label}>{name}</span>
+      <div style={styles.toggleBase} onClick={onToggle}>
+        <div style={styles.toggleKnob(enabled)} />
+      </div>
+    </div>
+  );
+}
+
+// ─── Main ControlPannel ────────────────────────────────────────────────────────
+export function ControlPannelView() {
+  const [activeTab, setActiveTab] = useState("strategy");
+  const [exchanges, setExchanges] = useState(EXCHANGES.map((name) => ({ name, enabled: true })));
+  const [strategy, setStrategy] = useState("simple_spread");
+  const [params, setParams] = useState({ minSpread: 0.5, maxPosition: 100, feeRate: 0.1 });
+  const [order, setOrder] = useState({ symbol: "BTC/USDT", qty: 0.01, side: "buy" as "buy" | "sell", type: "market" });
+  const [logs, setLogs] = useState<string[]>([]);
+
+  const addLog = useCallback((msg: string) => {
+    setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 9)]);
+  }, []);
+
+  // ── Exchange toggle handler ─────────────────────────────────────────────────
+  const toggleExchange = useCallback(
+    (index: number) => {
+      setExchanges((prev) => {
+        const updated = [...prev];
+        updated[index] = { ...updated[index], enabled: !updated[index].enabled };
+        addLog(`${updated[index].name} ${updated[index].enabled ? "ENABLED" : "DISABLED"}`);
+        return updated;
+      });
+    },
+    [addLog]
+  );
+
+  // ── Strategy handlers ────────────────────────────────────────────────────────
+  const applyStrategy = () => {
+    addLog(`Strategy: ${STRATEGIES.find((s) => s.id === strategy)?.label} | minSpread: ${params.minSpread}% | maxPos: ${params.maxPosition}`);
+  };
+
+  // ── Manual trade handler ────────────────────────────────────────────────────
+  const placeOrder = () => {
+    addLog(`ORDER PLACED: ${order.side.toUpperCase()} ${order.qty} ${order.symbol} @ ${order.type.toUpperCase()}`);
+  };
+
+  // ── Emergency stop ───────────────────────────────────────────────────────────
+  const emergencyStop = () => {
+    addLog("🚨 EMERGENCY STOP ACTIVATED – ALL TRADING HALTED");
+    // In production: trigger system shutdown via global state / API
+  };
+
+  // ── Render tab content ──────────────────────────────────────────────────────
+  const renderTab = () => {
+    switch (activeTab) {
+      case "strategy":
+        return (
+          <>
+            <div style={styles.sectionTitle}>Active Strategy</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {STRATEGIES.map((s) => (
+                <button
+                  key={s.id}
+                  style={{
+                    ...styles.button(strategy === s.id ? "#00e676" : "rgba(255,255,255,0.08)", strategy === s.id ? "#000" : "#a0b5cc"),
+                    fontSize: 9.5,
+                  }}
+                  onClick={() => { setStrategy(s.id); addLog(`Strategy selected: ${s.label}`); }}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+
+            <div style={styles.sectionTitle}>Parameters</div>
+            <div style={styles.row}>
+              <span style={styles.label}>Min Spread (%)</span>
+              <input
+                type="number"
+                step="0.01"
+                value={params.minSpread}
+                onChange={(e) => setParams({ ...params, minSpread: +e.target.value })}
+                style={styles.input}
+              />
+            </div>
+            <div style={styles.row}>
+              <span style={styles.label}>Max Position (units)</span>
+              <input
+                type="number"
+                value={params.maxPosition}
+                onChange={(e) => setParams({ ...params, maxPosition: +e.target.value })}
+                style={styles.input}
+              />
+            </div>
+            <div style={styles.row}>
+              <span style={styles.label}>Fee Rate (%)</span>
+              <input
+                type="number"
+                step="0.001"
+                value={params.feeRate}
+                onChange={(e) => setParams({ ...params, feeRate: +e.target.value })}
+                style={styles.input}
+              />
+            </div>
+
+            <button style={styles.button("#00e676", "#000")} onClick={applyStrategy}>
+              APPLY STRATEGY
+            </button>
+          </>
+        );
+
+      case "trading":
+        return (
+          <>
+            <div style={styles.sectionTitle}>Manual Order</div>
+            <div style={styles.row}>
+              <span style={styles.label}>Symbol</span>
+              <input
+                type="text"
+                value={order.symbol}
+                onChange={(e) => setOrder({ ...order, symbol: e.target.value.toUpperCase() })}
+                style={styles.input}
+              />
+            </div>
+            <div style={styles.row}>
+              <span style={styles.label}>Quantity</span>
+              <input
+                type="number"
+                step="0.001"
+                value={order.qty}
+                onChange={(e) => setOrder({ ...order, qty: +e.target.value })}
+                style={styles.input}
+              />
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button
+                style={{
+                  ...styles.button(order.side === "buy" ? "#00e676" : "rgba(255,255,255,0.08)", order.side === "buy" ? "#000" : "#a0b5cc"),
+                  flex: 1,
+                }}
+                onClick={() => setOrder({ ...order, side: "buy" })}
+              >
+                BUY
+              </button>
+              <button
+                style={{
+                  ...styles.button(order.side === "sell" ? "#ff002b" : "rgba(255,255,255,0.08)", order.side === "sell" ? "#fff" : "#a0b5cc"),
+                  flex: 1,
+                }}
+                onClick={() => setOrder({ ...order, side: "sell" })}
+              >
+                SELL
+              </button>
+            </div>
+            <div style={{ ...styles.row, marginTop: 8 }}>
+              <span style={styles.label}>Type</span>
+              <select
+                value={order.type}
+                onChange={(e) => setOrder({ ...order, type: e.target.value })}
+                style={{
+                  ...styles.input,
+                  width: 90,
+                  cursor: "pointer",
+                }}
+              >
+                <option value="market">MARKET</option>
+                <option value="limit">LIMIT</option>
+              </select>
+            </div>
+
+            <button style={styles.button("#00e676", "#000")} onClick={placeOrder}>
+              PLACE ORDER
+            </button>
+          </>
+        );
+
+      case "exchanges":
+        return (
+          <>
+            <div style={styles.sectionTitle}>Exchange Connections</div>
+            {exchanges.map((ex, i) => (
+              <ExchangeToggle key={ex.name} name={ex.name} enabled={ex.enabled} onToggle={() => toggleExchange(i)} />
+            ))}
+            <div style={{ ...styles.sectionTitle, marginTop: 16 }}>Network Status</div>
+            <div style={styles.row}>
+              <span style={styles.label}>Latency</span>
+              <span style={{ color: "#00e676", fontSize: 10, fontFamily: "monospace" }}>23ms</span>
+            </div>
+            <div style={styles.row}>
+              <span style={styles.label}>Uptime</span>
+              <span style={{ color: "rgba(150,165,185,0.8)", fontSize: 10, fontFamily: "monospace" }}>4h 12m</span>
+            </div>
+          </>
+        );
+
+      case "risk":
+        return (
+          <>
+            <div style={styles.sectionTitle}>Risk Management</div>
+            <div style={styles.row}>
+              <span style={styles.label}>Max Drawdown (%)</span>
+              <input type="number" defaultValue={15} style={styles.input} />
+            </div>
+            <div style={styles.row}>
+              <span style={styles.label}>Position Limit</span>
+              <input type="number" defaultValue={5} style={styles.input} />
+            </div>
+            <div style={styles.row}>
+              <span style={styles.label}>Auto-Stop Loss</span>
+              <div style={styles.toggleBase} onClick={() => addLog("Auto-Stop Loss toggled")}>
+                <div style={styles.toggleKnob(true)} />
+              </div>
+            </div>
+            <div style={styles.row}>
+              <span style={styles.label}>Cooldown (s)</span>
+              <input type="number" defaultValue={30} style={styles.input} />
+            </div>
+          </>
+        );
+
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div style={styles.container}>
+      {/* ── Tab bar ───────────────────────────────────────────────────────────── */}
+      <div style={styles.tabBar}>
+        {["strategy", "trading", "exchanges", "risk"].map((tab) => (
+          <div
+            key={tab}
+            style={styles.tab(activeTab === tab)}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab.toUpperCase()}
+          </div>
+        ))}
+      </div>
+
+      {/* ── Content ───────────────────────────────────────────────────────────── */}
+      <div style={styles.content}>
+        {renderTab()}
+
+        {/* ── Emergency stop always visible ───────────────────────────────────── */}
+        <button style={styles.killButton} onClick={emergencyStop}>
+          ⏻ EMERGENCY STOP
+        </button>
+
+        {/* ── Event log ───────────────────────────────────────────────────────── */}
+        <div style={{ marginTop: 8 }}>
+          <div style={styles.sectionTitle}>System Log</div>
+          <div style={styles.log}>
+            {logs.length === 0 ? (
+              <span style={{ opacity: 0.5 }}>Awaiting actions...</span>
+            ) : (
+              logs.map((entry, idx) => <div key={idx}>{entry}</div>)
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+
+
+
+
+
+
+
+
+export default function ControlPannel() {
+    return(
+        <>
+        <div className="h-[35%] w-full text-sm"><ControlPannelView/></div>
+        </>
+    )
+}
+</file>
+
+<file path="interface/arbot/components/navbar.tsx">
+// interface/arbot/components/navbar.tsx
+"use client";
+
+import { useState, useEffect, useRef, useCallback } from "react";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const EXCHANGES = [
+  { id: 0, name: "Binance", short: "BIN", color: "#f0b90b" },
+  { id: 1, name: "Coinbase", short: "CBP", color: "#0052ff" },
+  { id: 2, name: "Bybit", short: "BYB", color: "#f7a600" },
+  { id: 3, name: "Kraken", short: "KRK", color: "#5741d9" },
+  { id: 4, name: "OKX", short: "OKX", color: "#ffffff" },
+];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const fmtK = (n: number) =>
+  n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(Math.round(n));
+const fmt2 = (n: number) => n.toFixed(2);
+
+// ─── System time hook ────────────────────────────────────────────────────────
+function useSystemTime() {
+  const [time, setTime] = useState(new Date());
+  
+  useEffect(() => {
+    const timer = setInterval(() => setTime(new Date()), 100);
+    return () => clearInterval(timer);
+  }, []);
+  
+  return time;
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+export default function Navbar() {
+  const systemTime = useSystemTime();
+  const [stats, setStats] = useState({
+    tps: 0,
+    totalTrades: 0,
+    latency: 0,
+    uptime: 0,
+    memory: 0,
+    cpu: 0,
+    pnl: 0,
+    positions: 0,
+    activeStrategies: 2,
+  });
+  
+  const [exchangeStatus, setExchangeStatus] = useState(
+    EXCHANGES.map(ex => ({
+      ...ex,
+      connected: true,
+      latency: Math.floor(Math.random() * 50) + 5,
+    }))
+  );
+  
+  const [systemStatus, setSystemStatus] = useState<"running" | "paused" | "error">("running");
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [notifications] = useState([
+    { id: 1, type: "trade", message: "BTC/USDT spread detected: 0.12%", time: Date.now() - 5000 },
+    { id: 2, type: "system", message: "Data pipeline latency optimized to 23µs", time: Date.now() - 12000 },
+    { id: 3, type: "warning", message: "Binance rate limit: 80% utilized", time: Date.now() - 30000 },
+    { id: 4, type: "trade", message: "Arbitrage opportunity: ETH/USDT 0.08%", time: Date.now() - 45000 },
+  ]);
+  
+  const navRef = useRef<HTMLDivElement>(null);
+
+  // ── Stats simulation ────────────────────────────────────────────────────────
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setStats(prev => ({
+        tps: Math.floor(Math.random() * 5000) + 8000,
+        totalTrades: prev.totalTrades + Math.floor(Math.random() * 100),
+        latency: Math.random() * 100 + 15,
+        uptime: prev.uptime + 0.1,
+        memory: Math.random() * 2 + 2.5,
+        cpu: Math.random() * 20 + 10,
+        pnl: prev.pnl + (Math.random() - 0.48) * 100,
+        positions: Math.floor(Math.random() * 3) + 1,
+        activeStrategies: 2,
+      }));
+      
+      setExchangeStatus(prev =>
+        prev.map(ex => ({
+          ...ex,
+          latency: Math.max(1, ex.latency + Math.floor(Math.random() * 10) - 5),
+          connected: Math.random() > 0.02, // 98% uptime
+        }))
+      );
+    }, 200);
+    
+    return () => clearInterval(interval);
+  }, []);
+
+  // ── Format uptime ───────────────────────────────────────────────────────────
+  const formatUptime = (hours: number) => {
+    const h = Math.floor(hours);
+    const m = Math.floor((hours - h) * 60);
+    const s = Math.floor(((hours - h) * 60 - m) * 60);
+    return `${h}h ${m}m ${s}s`;
+  };
+
+  // ── Format time ─────────────────────────────────────────────────────────────
+  const formatTime = (date: Date) => {
+    return date.toLocaleTimeString('en-US', { 
+      hour12: false, 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit',
+      fractionalSecondDigits: 1 
+    });
+  };
+
+  // ── System status color ─────────────────────────────────────────────────────
+  const statusColor = systemStatus === "running" ? "#00e676" : 
+                      systemStatus === "paused" ? "#f5c518" : "#ff3a5c";
+
+  return (
+    <div
+      ref={navRef}
+      style={{
+        background: "linear-gradient(180deg, #0a0d14 0%, #07090c 100%)",
+        color: "#c8d4e0",
+        fontFamily: '"Courier New", Courier, monospace',
+        height: "4vh",
+        minHeight: "28px",
+        display: "flex",
+        alignItems: "center",
+        borderBottom: "1px solid rgba(255,255,255,0.08)",
+        userSelect: "none",
+        padding: "0 8px",
+        gap: 0,
+        fontSize: "clamp(8px, 0.7vw, 10px)",
+        overflow: "hidden",
+      }}
+    >
+      {/* ── Logo & Brand ────────────────────────────────────────────────────── */}
+      <div style={{ 
+        display: "flex", 
+        alignItems: "center", 
+        gap: 6, 
+        marginRight: 12,
+        flexShrink: 0,
+      }}>
+        <span style={{
+          color: "#00e676",
+          fontWeight: "bold",
+          fontSize: "clamp(10px, 0.9vw, 13px)",
+          letterSpacing: 1.5,
+          textShadow: "0 0 10px rgba(0,230,118,0.3)",
+          paddingRight: "50px",
+          paddingLeft: "50px"
+        }}>
+          AVA
+        </span>
+      </div>
+
+      {/* ── Divider ─────────────────────────────────────────────────────────── */}
+      <div style={{ 
+        width: 1, 
+        height: "60%", 
+        background: "rgba(255,255,255,0.06)", 
+        marginRight: 10,
+        flexShrink: 0,
+      }} />
+
+      {/* ── System Status Indicator ──────────────────────────────────────────── */}
+      <div style={{ 
+        display: "flex", 
+        alignItems: "center", 
+        gap: 5, 
+        marginRight: 10,
+        flexShrink: 0,
+      }}>
+        <span style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          background: statusColor,
+          boxShadow: `0 0 6px ${statusColor}`,
+          animation: "pulse 2s infinite",
+        }} />
+        <span style={{ 
+          color: statusColor, 
+          fontSize: "clamp(7px, 0.55vw, 8px)",
+          fontWeight: "bold",
+          letterSpacing: 0.5,
+        }}>
+          {systemStatus.toUpperCase()}
+        </span>
+        <span style={{
+          color: "rgba(255,255,255,0.2)",
+          fontSize: "clamp(6px, 0.5vw, 7px)",
+        }}>
+          v2.4.1
+        </span>
+      </div>
+
+      {/* ── Divider ─────────────────────────────────────────────────────────── */}
+      <div style={{ 
+        width: 1, 
+        height: "60%", 
+        background: "rgba(255,255,255,0.06)", 
+        marginRight: 10,
+        flexShrink: 0,
+      }} />
+
+      {/* ── Performance Metrics ──────────────────────────────────────────────── */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 0,
+        flex: 1,
+        overflow: "hidden",
+        flexWrap: "nowrap",
+      }}>
+        {/* TPS */}
+        <div style={metricStyle}>
+          <span style={metricLabelStyle}>TPS</span>
+          <span style={metricValueStyle("#00e676")}>{fmtK(stats.tps)}</span>
+        </div>
+
+        {/* Latency */}
+        <div style={metricStyle}>
+          <span style={metricLabelStyle}>LAT</span>
+          <span style={metricValueStyle(stats.latency < 30 ? "#00e676" : "#f5c518")}>
+            {stats.latency.toFixed(1)}µs
+          </span>
+        </div>
+
+        {/* P&L */}
+        <div style={metricStyle}>
+          <span style={metricLabelStyle}>P&L</span>
+          <span style={metricValueStyle(stats.pnl >= 0 ? "#00e676" : "#ff3a5c")}>
+            ${fmtK(Math.abs(stats.pnl))}
+          </span>
+        </div>
+
+        {/* Total Trades */}
+        <div style={metricStyle}>
+          <span style={metricLabelStyle}>TRD</span>
+          <span style={metricValueStyle("rgba(200,210,225,0.9)")}>{fmtK(stats.totalTrades)}</span>
+        </div>
+
+        {/* Positions */}
+        <div style={metricStyle}>
+          <span style={metricLabelStyle}>POS</span>
+          <span style={metricValueStyle("#f5c518")}>{stats.positions}</span>
+        </div>
+
+        {/* CPU */}
+        <div style={metricStyle}>
+          <span style={metricLabelStyle}>CPU</span>
+          <span style={metricValueStyle(stats.cpu < 30 ? "#00e676" : "#f5c518")}>
+            {stats.cpu.toFixed(1)}%
+          </span>
+        </div>
+
+        {/* Memory */}
+        <div style={metricStyle}>
+          <span style={metricLabelStyle}>MEM</span>
+          <span style={metricValueStyle("rgba(200,210,225,0.9)")}>{stats.memory.toFixed(1)}GB</span>
+        </div>
+
+        {/* Uptime */}
+        <div style={metricStyle}>
+          <span style={metricLabelStyle}>UP</span>
+          <span style={metricValueStyle("rgba(180,195,215,0.8)")}>{formatUptime(stats.uptime)}</span>
+        </div>
+      </div>
+
+      {/* ── Exchange Status Pills ────────────────────────────────────────────── */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 4,
+        marginLeft: "auto",
+        flexShrink: 0,
+      }}>
+        {exchangeStatus.map((ex) => (
+          <div
+            key={ex.id}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 3,
+              padding: "2px 6px",
+              borderRadius: 2,
+              background: ex.connected ? `${ex.color}10` : "rgba(255,58,92,0.1)",
+              border: `1px solid ${ex.connected ? `${ex.color}30` : "rgba(255,58,92,0.3)"}`,
+              fontSize: "clamp(6px, 0.5vw, 7px)",
+              cursor: "pointer",
+              transition: "all 0.2s",
+            }}
+            title={`${ex.name}: ${ex.connected ? `Connected (${ex.latency}ms)` : "Disconnected"}`}
+          >
+            <span style={{
+              width: 4,
+              height: 4,
+              borderRadius: "50%",
+              background: ex.connected ? ex.color : "#ff3a5c",
+              flexShrink: 0,
+            }} />
+            <span style={{ 
+              color: ex.connected ? ex.color : "#ff3a5c",
+              fontWeight: "bold",
+              fontSize: "inherit",
+            }}>
+              {ex.short}
+            </span>
+            <span style={{ 
+              color: "rgba(255,255,255,0.3)",
+              fontSize: "inherit",
+            }}>
+              {ex.connected ? `${ex.latency}ms` : "OFF"}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Divider ─────────────────────────────────────────────────────────── */}
+      <div style={{ 
+        width: 1, 
+        height: "60%", 
+        background: "rgba(255,255,255,0.06)", 
+        marginLeft: 8,
+        marginRight: 8,
+        flexShrink: 0,
+      }} />
+
+      {/* ── Right Section: Time & Controls ───────────────────────────────────── */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        flexShrink: 0,
+      }}>
+        {/* System Time */}
+        <span style={{
+          color: "rgba(180,195,215,0.7)",
+          fontSize: "clamp(7px, 0.6vw, 9px)",
+          fontFamily: "monospace",
+          letterSpacing: 0.5,
+        }}>
+          {formatTime(systemTime)}
+        </span>
+
+        {/* UTC Time */}
+        <span style={{
+          color: "rgba(255,255,255,0.25)",
+          fontSize: "clamp(6px, 0.5vw, 7px)",
+        }}>
+          UTC
+        </span>
+
+        {/* Notifications Bell */}
+        <button
+          onClick={() => setShowNotifications(!showNotifications)}
+          style={{
+            background: "transparent",
+            border: "none",
+            color: "rgba(180,195,215,0.6)",
+            cursor: "pointer",
+            fontSize: "clamp(10px, 0.8vw, 12px)",
+            padding: "0 4px",
+            position: "relative",
+            fontFamily: "inherit",
+          }}
+          title="Notifications"
+        >
+          🔔
+          {notifications.length > 0 && (
+            <span style={{
+              position: "absolute",
+              top: -2,
+              right: -2,
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: "#ff3a5c",
+              fontSize: 6,
+            }} />
+          )}
+        </button>
+
+        {/* Control Buttons */}
+        <button
+          onClick={() => setSystemStatus(prev => prev === "running" ? "paused" : "running")}
+          style={{
+            background: systemStatus === "running" ? "rgba(255,197,24,0.1)" : "rgba(0,230,118,0.1)",
+            border: `1px solid ${systemStatus === "running" ? "rgba(245,197,24,0.3)" : "rgba(0,230,118,0.3)"}`,
+            color: systemStatus === "running" ? "#f5c518" : "#00e676",
+            fontSize: "clamp(7px, 0.55vw, 8px)",
+            fontWeight: "bold",
+            padding: "3px 8px",
+            borderRadius: 3,
+            cursor: "pointer",
+            fontFamily: "inherit",
+            letterSpacing: 0.5,
+            transition: "all 0.15s",
+          }}
+        >
+          {systemStatus === "running" ? "⏸ PAUSE" : "▶ START"}
+        </button>
+
+        <button
+          style={{
+            background: "rgba(255,0,43,0.1)",
+            border: "1px solid rgba(255,0,43,0.3)",
+            color: "#ff3a5c",
+            fontSize: "clamp(7px, 0.55vw, 8px)",
+            fontWeight: "bold",
+            padding: "3px 8px",
+            borderRadius: 3,
+            cursor: "pointer",
+            fontFamily: "inherit",
+            letterSpacing: 0.5,
+            transition: "all 0.15s",
+          }}
+          title="Emergency Stop"
+        >
+          ⏹ STOP
+        </button>
+      </div>
+
+      {/* ── Notifications Dropdown ───────────────────────────────────────────── */}
+      {showNotifications && (
+        <div style={{
+          position: "absolute",
+          top: "100%",
+          right: 8,
+          width: 300,
+          background: "rgba(10,13,20,0.98)",
+          border: "1px solid rgba(255,255,255,0.1)",
+          borderRadius: 4,
+          padding: 8,
+          zIndex: 1000,
+          backdropFilter: "blur(10px)",
+        }}>
+          <div style={{
+            display: "flex",
+            justifyContent: "space-between",
+            marginBottom: 6,
+            fontSize: 9,
+          }}>
+            <span style={{ color: "#e8ecf0", fontWeight: "bold" }}>NOTIFICATIONS</span>
+            <span style={{ color: "rgba(255,255,255,0.3)" }}>{notifications.length}</span>
+          </div>
+          {notifications.map(n => (
+            <div key={n.id} style={{
+              padding: "4px 6px",
+              borderBottom: "1px solid rgba(255,255,255,0.03)",
+              fontSize: 8,
+              display: "flex",
+              gap: 6,
+            }}>
+              <span style={{ 
+                color: n.type === "trade" ? "#00e676" : n.type === "warning" ? "#f5c518" : "#0052ff",
+                flexShrink: 0,
+              }}>
+                {n.type === "trade" ? "●" : n.type === "warning" ? "▲" : "◆"}
+              </span>
+              <span style={{ color: "rgba(200,210,225,0.8)" }}>{n.message}</span>
+              <span style={{ color: "rgba(255,255,255,0.2)", marginLeft: "auto", flexShrink: 0 }}>
+                {Math.floor((Date.now() - n.time) / 1000)}s ago
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Inline Styles ────────────────────────────────────────────────────────────
+const metricStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 3,
+  padding: "0 6px",
+  borderRight: "1px solid rgba(255,255,255,0.03)",
+  flexShrink: 0,
+};
+
+const metricLabelStyle: React.CSSProperties = {
+  color: "rgba(255,255,255,0.25)",
+  fontSize: "clamp(6px, 0.5vw, 7px)",
+  letterSpacing: 0.5,
+  fontWeight: "bold",
+};
+
+const metricValueStyle = (color: string): React.CSSProperties => ({
+  color,
+  fontSize: "clamp(7px, 0.6vw, 9px)",
+  fontWeight: "bold",
+  fontFamily: "monospace",
+});
+</file>
+
+<file path="interface/arbot/components/orderhistory.tsx">
+// interface/arbot/components/orderhistory.tsx
+"use client";
+
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
+import { List } from "react-window";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"];
+const TABS = [
+  { id: "open", label: "OPEN" },
+  { id: "filled", label: "FILLED" },
+  { id: "rejected", label: "REJECTED" },
+] as const;
+type TabId = (typeof TABS)[number]["id"];
+
+const BUFFER_CAPACITY = 2000;        // keep last N orders in the ring buffer
+const BATCH_FLUSH_MS = 16;          // ~60 FPS state updates
+const DEMO_ORDERS_PER_TICK = 500;   // how many orders to inject per demo interval
+const DEMO_INTERVAL_MS = 50;        // demo tick interval (20 ticks/sec → 10k orders/sec)
+const ROW_HEIGHT = 22;              // pixel height of each order row
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+type OrderStatus = "open" | "filled" | "rejected";
+type OrderSide = "buy" | "sell";
+
+interface Order {
+  id: string;
+  symbol: string;
+  side: OrderSide;
+  type: string;           // "market" | "limit"
+  qty: number;
+  price: number;
+  filledPrice?: number;
+  status: OrderStatus;
+  timestamp: number;
+  pnl?: number;           // only for filled
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const fmt2 = (n: number) => n.toFixed(2);
+const fmt4 = (n: number) => n.toFixed(4);
+const fmtK = (n: number) =>
+  n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
+
+const pad = (n: number) => String(n).padStart(2, "0");
+const timeStr = (ts: number) => {
+  const d = new Date(ts);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+};
+
+let orderCounter = 1;
+
+// ─── Demo order factory (simple, fast) ────────────────────────────────────────
+function makeDemoOrder(): Order {
+  const symbol = SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
+  const side = Math.random() > 0.5 ? "buy" : "sell";
+  const type = Math.random() > 0.3 ? "market" : "limit";
+  const price = 65000 + Math.random() * 10000;
+  const qty = +(Math.random() * 2 + 0.01).toFixed(4);
+  const status: OrderStatus =
+    Math.random() > 0.15 ? "filled" : Math.random() > 0.5 ? "open" : "rejected";
+  const filledPrice =
+    status === "filled" ? price + (Math.random() - 0.5) * 20 : undefined;
+  const pnl =
+    status === "filled" && filledPrice
+      ? side === "buy"
+        ? (filledPrice - price) * qty
+        : (price - filledPrice) * qty
+      : undefined;
+  return {
+    id: `ORD${String(orderCounter++).padStart(5, "0")}`,
+    symbol,
+    side,
+    type,
+    qty,
+    price,
+    filledPrice,
+    status,
+    timestamp: Date.now() - Math.floor(Math.random() * 120000),
+    pnl,
+  };
+}
+
+// ─── Sub-component: Single Order Row (memoised) ───────────────────────────────
+const OrderRow = ({ orders, index, style }: any) => {
+  const order: Order = orders[index];
+  const posPnl = (order.pnl ?? 0) >= 0;
+  const sideColor = order.side === "buy" ? "#00e676" : "#ff3a5c";
+  const statusColor =
+    order.status === "filled"
+      ? "#00e676"
+      : order.status === "rejected"
+      ? "#ff3a5c"
+      : "rgba(245,197,24,0.8)";
+
+  return (
+    <div
+      style={{
+        ...style,
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "0 10px",
+        borderBottom: "1px solid rgba(255,255,255,0.03)",
+        fontSize: 10,
+        background: order.pnl
+          ? posPnl
+            ? "rgba(0,230,118,0.04)"
+            : "rgba(255,58,92,0.04)"
+          : "transparent",
+        boxSizing: "border-box",
+      }}
+    >
+      <span
+        style={{
+          color: "rgba(120,140,165,0.5)",
+          width: 50,
+          fontFamily: "monospace",
+        }}
+      >
+        {timeStr(order.timestamp)}
+      </span>
+      <span
+        style={{
+          color: sideColor,
+          width: 70,
+          fontWeight: "bold",
+          fontFamily: "monospace",
+        }}
+      >
+        {order.id}
+      </span>
+      <span style={{ color: "rgba(200,210,225,0.8)", width: 70 }}>
+        {order.symbol}
+      </span>
+      <span
+        style={{
+          color: sideColor,
+          width: 32,
+          textTransform: "uppercase",
+          fontWeight: "bold",
+        }}
+      >
+        {order.side}
+      </span>
+      <span
+        style={{
+          color: "rgba(150,165,185,0.7)",
+          width: 24,
+          textTransform: "uppercase",
+        }}
+      >
+        {order.type === "market" ? "MKT" : "LMT"}
+      </span>
+      <span
+        style={{
+          color: "rgba(200,210,225,0.7)",
+          width: 60,
+          fontFamily: "monospace",
+        }}
+      >
+        {fmt2(order.qty)}
+      </span>
+      <span
+        style={{
+          color: "rgba(200,210,225,0.7)",
+          width: 72,
+          fontFamily: "monospace",
+        }}
+      >
+        ${fmt2(order.price)}
+      </span>
+      <span
+        style={{
+          color: statusColor,
+          width: 62,
+          fontFamily: "monospace",
+          fontSize: 9,
+          textAlign: "center",
+          background: `rgba(${
+            order.status === "filled"
+              ? "0,230,118"
+              : order.status === "rejected"
+              ? "255,58,92"
+              : "245,197,24"
+          },0.1)`,
+          padding: "1px 4px",
+          borderRadius: 2,
+        }}
+      >
+        {order.status.toUpperCase()}
+      </span>
+      {order.pnl != null && (
+        <span
+          style={{
+            color: posPnl ? "#00e676" : "#ff3a5c",
+            fontFamily: "monospace",
+            fontWeight: "bold",
+            marginLeft: "auto",
+          }}
+        >
+          {posPnl ? "+" : ""}
+          ${fmt4(order.pnl)}
+        </span>
+      )}
+    </div>
+  );
+};
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+/**
+ * OrderHistory – ultra-high‑throughput order table
+ *
+ * Ref API:
+ *   orderHistoryRef.current.addOrder({
+ *     symbol, side, type, qty, price, filledPrice?,
+ *     status, pnl?, timestamp?
+ *   })
+ *
+ * Props:
+ *   demo   {bool}  – run built‑in high‑speed simulator (default true)
+ */
+const OrderHistoryView = forwardRef(function OrderHistoryView(
+  { demo = true }: { demo?: boolean },
+  ref
+) {
+  // ── Ring buffer & mutable state (avoids React re-render on every order) ───
+  const bufferRef = useRef<Order[]>([]);        // ring buffer, max BUFFER_CAPACITY
+  const startIdxRef = useRef(0);                // index of oldest order in ring
+  const countRef = useRef(0);                   // total orders currently in ring
+  const pendingOrders = useRef<Order[]>([]);    // orders queued since last flush
+
+  // React‑visible data snapshot (flushed at 60 FPS)
+  const [visibleOrders, setVisibleOrders] = useState<Order[]>([]);
+  const [activeTab, setActiveTab] = useState<TabId>("open");
+
+  // Aggregate stats (updated atomically in the fast path)
+  const statsRef = useRef({
+    totalTrades: 0,
+    totalPnl: 0,
+    lastFlushTime: Date.now(),
+    flushCount: 0,
+  });
+  const [statsDisplay, setStatsDisplay] = useState({
+    totalTrades: 0,
+    totalPnl: 0,
+    tps: 0,
+    avgLatency: 0,
+  });
+
+  // ── Add order (ultra‑fast path, no React state update) ──────────────────────
+  const addOrder = useCallback((order: Order) => {
+    const o = { ...order, timestamp: order.timestamp || Date.now() };
+    // Push into ring buffer
+    const buf = bufferRef.current;
+    const start = startIdxRef.current;
+    const count = countRef.current;
+    if (count === BUFFER_CAPACITY) {
+      // overwrite oldest
+      buf[(start + count) % BUFFER_CAPACITY] = o;
+      startIdxRef.current = (start + 1) % BUFFER_CAPACITY;
+    } else {
+      buf[(start + count) % BUFFER_CAPACITY] = o;
+      countRef.current = count + 1;
+    }
+    // Accumulate for batch flush
+    pendingOrders.current.push(o);
+    // Update global stats
+    statsRef.current.totalTrades++;
+    if (o.pnl !== undefined) {
+      statsRef.current.totalPnl += o.pnl;
+    }
+  }, []);
+
+  // Expose addOrder via ref
+  useImperativeHandle(ref, () => ({ addOrder }), [addOrder]);
+
+  // ── Batch flush: move pending orders into React state at 60 FPS ─────────────
+  useEffect(() => {
+    const flush = () => {
+      const buf = bufferRef.current;
+      const count = countRef.current;
+      const start = startIdxRef.current;
+      // Build a fresh array from the ring buffer (only once per frame)
+      const snapshot: Order[] = [];
+      for (let i = 0; i < count; i++) {
+        snapshot.push(buf[(start + i) % BUFFER_CAPACITY]);
+      }
+      snapshot.reverse(); // newest first
+      setVisibleOrders(snapshot);
+
+      // Update stats display
+      const now = Date.now();
+      const elapsed = now - statsRef.current.lastFlushTime;
+      if (elapsed >= 1000) {
+        const tps = Math.round(
+          (statsRef.current.totalTrades - statsRef.current.flushCount) * 1000 / elapsed
+        );
+        statsRef.current.flushCount = statsRef.current.totalTrades;
+        statsRef.current.lastFlushTime = now;
+        setStatsDisplay({
+          totalTrades: statsRef.current.totalTrades,
+          totalPnl: statsRef.current.totalPnl,
+          tps,
+          avgLatency: 0, // placeholder
+        });
+      }
+      pendingOrders.current = [];
+    };
+
+    const interval = setInterval(flush, BATCH_FLUSH_MS);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ── Demo simulator: inject massive order flow ──────────────────────────────
+  useEffect(() => {
+    if (!demo) return;
+    // Pre‑populate with a few thousand orders
+    for (let i = 0; i < 1000; i++) addOrder(makeDemoOrder());
+
+    const id = setInterval(() => {
+      // Inject a batch of orders
+      for (let i = 0; i < DEMO_ORDERS_PER_TICK; i++) {
+        addOrder(makeDemoOrder());
+      }
+    }, DEMO_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [demo, addOrder]);
+
+  // ── Filter orders visible on screen ─────────────────────────────────────────
+  const filteredOrders = visibleOrders.filter((o) => o.status === activeTab);
+
+  return (
+    <div
+      style={{
+        background: "#07090c",
+        color: "#c8d4e0",
+        fontFamily: '"Courier New", Courier, monospace',
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        userSelect: "none",
+        borderRight: "1px solid rgba(255,255,255,0.05)",
+      }}
+    >
+      {/* ── Header Bar with stats ──────────────────────────────────────────── */}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "4px 10px",
+          borderBottom: "1px solid rgba(255,255,255,0.05)",
+          background: "rgba(255,255,255,0.01)",
+          flexShrink: 0,
+          rowGap: 4,
+        }}
+      >
+        <span
+          style={{
+            color: "#e8ecf0",
+            fontWeight: "bold",
+            fontSize: 12,
+            letterSpacing: 0.5,
+          }}
+        >
+          ORDERS
+        </span>
+        <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+          <span style={{ color: "rgba(120,140,165,0.6)", fontSize: 9 }}>
+            TOTAL {fmtK(statsDisplay.totalTrades)}
+          </span>
+          <span style={{ color: "#00e676", fontSize: 9 }}>
+            TPS {fmtK(statsDisplay.tps)}
+          </span>
+          <span
+            style={{
+              color: statsDisplay.totalPnl >= 0 ? "#00e676" : "#ff3a5c",
+              fontSize: 9,
+            }}
+          >
+            P&L ${fmt2(statsDisplay.totalPnl)}
+          </span>
+        </div>
+      </div>
+
+      {/* ── Tabs ────────────────────────────────────────────────────────────── */}
+      <div
+        style={{
+          display: "flex",
+          padding: "2px 10px",
+          borderBottom: "1px solid rgba(255,255,255,0.03)",
+          flexShrink: 0,
+          gap: 2,
+        }}
+      >
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            style={{
+              background:
+                activeTab === tab.id ? "rgba(0,230,118,0.1)" : "transparent",
+              border:
+                activeTab === tab.id
+                  ? "1px solid rgba(0,230,118,0.3)"
+                  : "1px solid transparent",
+              color:
+                activeTab === tab.id ? "#00e676" : "rgba(150,165,185,0.7)",
+              fontSize: 9,
+              fontWeight: activeTab === tab.id ? "bold" : "normal",
+              padding: "3px 10px",
+              borderRadius: 3,
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Column labels (sticky) ─────────────────────────────────────────── */}
+      <div
+        style={{
+          display: "flex",
+          gap: 6,
+          padding: "2px 10px",
+          borderBottom: "1px solid rgba(255,255,255,0.03)",
+          color: "rgba(90,110,140,0.45)",
+          fontSize: 8,
+          flexShrink: 0,
+        }}
+      >
+        <span style={{ width: 50 }}>TIME</span>
+        <span style={{ width: 70 }}>ORDER ID</span>
+        <span style={{ width: 70 }}>SYMBOL</span>
+        <span style={{ width: 32 }}>SIDE</span>
+        <span style={{ width: 24 }}>TYPE</span>
+        <span style={{ width: 60 }}>QTY</span>
+        <span style={{ width: 72 }}>PRICE</span>
+        <span style={{ width: 62, textAlign: "center" }}>STATUS</span>
+        <span style={{ marginLeft: "auto" }}>P&L</span>
+      </div>
+
+      {/* ── Virtualized order list (ultra‑fast rendering) ──────────────────── */}
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {filteredOrders.length > 0 ? (
+          <List
+            rowCount={filteredOrders.length}
+            rowHeight={ROW_HEIGHT}
+            rowComponent={OrderRow}
+            rowProps={{ orders: filteredOrders }}
+            style={{ height: "100%", width: "100%", overflow: "auto" }}
+          />
+        ) : (
+          <div
+            style={{
+              padding: 16,
+              color: "rgba(120,140,165,0.3)",
+              fontSize: 10,
+              textAlign: "center",
+            }}
+          >
+            No {activeTab} orders
+          </div>
+        )}
+      </div>
+
+      {/* ── Footer ──────────────────────────────────────────────────────────── */}
+      <div
+        style={{
+          padding: "3px 10px",
+          borderTop: "1px solid rgba(255,255,255,0.04)",
+          display: "flex",
+          justifyContent: "space-between",
+          color: "rgba(100,120,145,0.55)",
+          fontSize: 9,
+          flexShrink: 0,
+        }}
+      >
+        <span>
+          {filteredOrders.length} order{filteredOrders.length !== 1 ? "s" : ""}{" "}
+          shown
+        </span>
+        <span>LIVE</span>
+      </div>
+    </div>
+  );
+});
+
+// ─── Wrapper for page ────────────────────────────────────────────────────────
+export default function OrderHistory() {
+  return (
+    <div className="h-full w-[40%] text-sm">
+      <OrderHistoryView demo={true} />
+    </div>
+  );
+}
+</file>
+
+<file path="interface/arbot/components/pulsemap.tsx">
+import {
+  useState, useEffect, useRef, useCallback,
+  forwardRef, useImperativeHandle,
+} from "react";
+
+// ─── Config ────────────────────────────────────────────────────────────────────
+const EXCHANGES  = ["Binance", "Bybit", "Kraken", "Coinbase", "OKX"];
+const EX_SHORT   = ["BIN",     "BYB",   "KRK",    "CBP",      "OKX"];
+const N          = EXCHANGES.length;
+const MAX_HIST   = 120;          // items kept in history ring buffer
+const HIST_SHOW  = 22;          // items rendered in DOM
+const TICK_MS    = 100;
+const DEMO_TPT   = 28;          // demo trades per tick  (~280 tps visible)
+const DECAY      = 0.87;        // heat decay per RAF frame (~60 fps)
+const HEAT_BOOST = 0.55;        // heat added per trade hit
+const STATE_HZ   = 100;         // React state refresh interval (ms)
+
+const SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"];
+
+// ─── Colour helpers ────────────────────────────────────────────────────────────
+// heat 0→1  :  dark  →  amber  →  bright green/white
+function heatColor(h) {
+  if (h <= 0) return "#0c0e12";
+  if (h < 0.45) {
+    const t  = h / 0.45;
+    const r  = Math.round(12  + (255 - 12)  * t);
+    const g  = Math.round(14  + (130 - 14)  * t);
+    const b  = Math.round(18  + (0   - 18)  * t);
+    return `rgb(${r},${g},${b})`;
+  }
+  const t  = (h - 0.45) / 0.55;
+  const r  = Math.round(220 + (0   - 255) * t);
+  const g  = Math.round(130 + (240 - 130) * t);
+  const b  = Math.round(0   + (140 - 0)   * t);
+  return `rgb(${r},${g},${b})`;
+}
+function heatTextColor(h) {
+  return h > 0.45 ? "rgba(0,0,0,0.85)" : h > 0.12 ? "rgba(255,255,255,0.75)" : "rgba(255,255,255,0.22)";
+}
+function heatBorderAlpha(h) {
+  return h > 0.2 ? 0.35 : 0.06;
+}
+
+// ─── Formatters ───────────────────────────────────────────────────────────────
+const fmt2  = (n) => n.toFixed(2);
+const fmt4  = (n) => n.toFixed(4);
+const fmtK  = (n) => n >= 1e6 ? `${(n/1e6).toFixed(1)}M` : n >= 1e3 ? `${(n/1e3).toFixed(1)}k` : String(n);
+const pad2  = (n) => String(n).padStart(2, "0");
+const tsLabel = (d) =>
+  `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3,"0").slice(0,2)}`;
+
+// ─── Demo trade factory ────────────────────────────────────────────────────────
+function makeDemoTrade(mid) {
+  let bi = Math.floor(Math.random() * N);
+  let si = Math.floor(Math.random() * N);
+  while (si === bi) si = Math.floor(Math.random() * N);
+  const sym    = SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
+  const qty    = +(Math.random() * 2.5 + 0.05).toFixed(3);
+  const buyP   = mid + (Math.random() - 0.5) * 80;
+  const edge   = Math.random() * 4 + 0.05;
+  const sellP  = buyP + edge;
+  const profit = +((sellP - buyP) * qty).toFixed(5);
+  return {
+    buyIdx:   bi,
+    sellIdx:  si,
+    symbol:   sym,
+    qty,
+    buyPrice:  +buyP.toFixed(2),
+    sellPrice: +sellP.toFixed(2),
+    profit,
+  };
+}
+
+// ─── Canvas grid draw ──────────────────────────────────────────────────────────
+function drawGrid(canvas, heat, counts) {
+  if (!canvas || !canvas.width || !canvas.height) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#080a0d";
+  ctx.fillRect(0, 0, W, H);
+
+  const CW = W / N, CH = H / N;
+  const PAD = 2.5;
+
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      const x = c * CW + PAD, y = r * CH + PAD;
+      const w = CW - PAD * 2, h = CH - PAD * 2;
+
+      if (r === c) {
+        // diagonal — same exchange, not tradeable
+        ctx.fillStyle = "rgba(255,255,255,0.018)";
+        ctx.fillRect(x, y, w, h);
+        ctx.fillStyle = "rgba(255,255,255,0.12)";
+        ctx.font = `${Math.min(w, h) * 0.28}px monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("×", c * CW + CW / 2, r * CH + CH / 2);
+        continue;
+      }
+
+      const hv = heat[r][c];
+
+      // Cell fill
+      ctx.fillStyle = heatColor(hv);
+      ctx.fillRect(x, y, w, h);
+
+      // Border
+      ctx.strokeStyle = `rgba(255,255,255,${heatBorderAlpha(hv)})`;
+      ctx.lineWidth = 0.6;
+      ctx.strokeRect(x, y, w, h);
+
+      // Count label
+      const cnt = counts[r][c];
+      if (cnt > 0) {
+        const label = fmtK(cnt);
+        const fs = Math.max(8, Math.min(CW, CH) * 0.22);
+        ctx.fillStyle = heatTextColor(hv);
+        ctx.font = `bold ${fs}px "Courier New", monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, c * CW + CW / 2, r * CH + CH / 2);
+      }
+    }
+  }
+
+  // Row/col separator lines (subtle)
+  ctx.strokeStyle = "rgba(255,255,255,0.05)";
+  ctx.lineWidth = 0.5;
+  for (let i = 1; i < N; i++) {
+    ctx.beginPath(); ctx.moveTo(i * CW, 0); ctx.lineTo(i * CW, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, i * CH); ctx.lineTo(W, i * CH); ctx.stroke();
+  }
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+function ExLabel({ label, sub, color, subColor }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+      <span style={{ color, fontSize: 9, fontWeight: "bold", letterSpacing: 0.8, lineHeight: 1.2 }}>{label}</span>
+      <span style={{ color: subColor, fontSize: 7, letterSpacing: 0.3 }}>{sub}</span>
+    </div>
+  );
+}
+
+function HistRow({ trade }) {
+  const pos = trade.profit >= 0;
+  return (
+    <div style={{
+      padding: "4px 10px 4px",
+      borderBottom: "1px solid rgba(255,255,255,0.03)",
+      background: pos ? "rgba(0,220,110,0.025)" : "rgba(255,50,60,0.025)",
+    }}>
+      {/* Row 1: time + pnl */}
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 1 }}>
+        <span style={{ color: "rgba(110,130,160,0.65)", fontSize: 8.5, fontFamily: "monospace" }}>
+          {tsLabel(new Date(trade.ts))}
+        </span>
+        <span style={{
+          color: pos ? "#00e676" : "#ff3a5c",
+          fontSize: 9.5, fontWeight: "bold", fontFamily: "monospace",
+        }}>
+          {pos ? "+" : ""}${fmt4(trade.profit)}
+        </span>
+      </div>
+      {/* Row 2: route + symbol */}
+      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+        <span style={{ background: "rgba(0,230,118,0.12)", color: "#00e676", fontSize: 8, padding: "0 4px", borderRadius: 2, fontFamily: "monospace", fontWeight: "bold" }}>
+          {EX_SHORT[trade.buyIdx]}
+        </span>
+        <span style={{ color: "rgba(255,255,255,0.2)", fontSize: 9 }}>→</span>
+        <span style={{ background: "rgba(255,58,92,0.12)", color: "#ff3a5c", fontSize: 8, padding: "0 4px", borderRadius: 2, fontFamily: "monospace", fontWeight: "bold" }}>
+          {EX_SHORT[trade.sellIdx]}
+        </span>
+        <span style={{ color: "rgba(160,180,210,0.5)", fontSize: 8, marginLeft: "auto", fontFamily: "monospace" }}>
+          {trade.symbol}
+        </span>
+      </div>
+      {/* Row 3: qty / prices */}
+      <div style={{ color: "rgba(110,130,160,0.45)", fontSize: 8, fontFamily: "monospace", marginTop: 1 }}>
+        {trade.qty} @ {fmt2(trade.buyPrice)} → {fmt2(trade.sellPrice)}
+      </div>
+    </div>
+  );
+}
+
+function StatPill({ label, value, valueColor }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <span style={{ color: "rgba(110,130,160,0.5)", fontSize: 9.5 }}>{label}</span>
+      <span style={{ color: valueColor || "#f51818", fontSize: 10, fontWeight: "bold", fontFamily: "monospace" }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+// ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
+/**
+ * PulseMap — HFT Arbitrage Heatmap
+ *
+ * Ref API:
+ *   pulsemapRef.current.addTrade({
+ *     buyIdx:   0,          // 0-4 → BIN BYB KRK CBP OKX
+ *     sellIdx:  4,
+ *     symbol:   "BTC/USDT",
+ *     qty:      0.5,
+ *     buyPrice: 74250.10,
+ *     sellPrice:74252.60,
+ *     profit:   1.25,
+ *   })
+ *
+ * Props:
+ *   demo   {bool}   — run built-in simulator (default true)
+ *   theme  {"dark"|"light"} — colour theme (default "dark")
+ */
+const PulseMap = forwardRef(function PulseMap({ demo = true }, ref) {
+  const canvasRef = useRef(null);
+
+  // All hot data lives here — never triggers re-renders
+  const S = useRef({
+    heat:   Array.from({ length: N }, () => new Float32Array(N)),
+    counts: Array.from({ length: N }, () => new Uint32Array(N)),
+    ring:   [],           // history ring buffer (MAX_HIST items)
+    rafId:  null,
+    total:  0,
+    totalProfit: 0,
+    tpsCount:    0,
+    tpsWindow:   Date.now(),
+    tpsCurrent:  0,
+  });
+
+  // React state — only refreshed at STATE_HZ
+  const [uiHistory, setUiHistory] = useState([]);
+  const [uiStats,   setUiStats]   = useState({ total: 0, tps: 0, profit: 0 });
+
+  // ── Core ingestion (zero React overhead) ────────────────────────────────────
+  const addTrade = useCallback((trade) => {
+    const s  = S.current;
+    const { buyIdx, sellIdx, profit } = trade;
+    if (buyIdx === sellIdx || buyIdx < 0 || sellIdx < 0 || buyIdx >= N || sellIdx >= N) return;
+
+    // Heat & count
+    s.heat[buyIdx][sellIdx] = Math.min(1, s.heat[buyIdx][sellIdx] + HEAT_BOOST);
+    s.counts[buyIdx][sellIdx]++;
+
+    // Stats
+    s.total++;
+    s.totalProfit += profit || 0;
+    s.tpsCount++;
+
+    // History ring
+    const entry = { ...trade, ts: Date.now() };
+    s.ring.unshift(entry);
+    if (s.ring.length > MAX_HIST) s.ring.length = MAX_HIST;
+  }, []);
+
+  useImperativeHandle(ref, () => ({ addTrade }), [addTrade]);
+
+  // ── Demo simulator ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!demo) return;
+    const mid = { v: 74250 };
+    const id = setInterval(() => {
+      mid.v += (Math.random() - 0.499) * 3;
+      for (let i = 0; i < DEMO_TPT; i++) addTrade(makeDemoTrade(mid.v));
+    }, TICK_MS);
+    return () => clearInterval(id);
+  }, [demo, addTrade]);
+
+  // ── RAF render loop — heat decay + canvas draw ───────────────────────────────
+  useEffect(() => {
+    const s = S.current;
+    const frame = () => {
+      for (let r = 0; r < N; r++)
+        for (let c = 0; c < N; c++)
+          if (s.heat[r][c] > 0.002) s.heat[r][c] *= DECAY; else s.heat[r][c] = 0;
+
+      drawGrid(canvasRef.current, s.heat, s.counts);
+      s.rafId = requestAnimationFrame(frame);
+    };
+    frame();
+    return () => cancelAnimationFrame(s.rafId);
+  }, []);
+
+  // ── Throttled React state sync ───────────────────────────────────────────────
+  useEffect(() => {
+    const id = setInterval(() => {
+      const s = S.current;
+      const now = Date.now();
+      const elapsed = now - s.tpsWindow;
+      if (elapsed >= 900) {
+        s.tpsCurrent = Math.round(s.tpsCount * 1000 / elapsed);
+        s.tpsCount   = 0;
+        s.tpsWindow  = now;
+      }
+      setUiHistory(s.ring.slice(0, HIST_SHOW));
+      setUiStats({ total: s.total, tps: s.tpsCurrent, profit: +s.totalProfit.toFixed(2) });
+    }, STATE_HZ);
+    return () => clearInterval(id);
+  }, []);
+
+  // ── Resize observer ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ro = new ResizeObserver(() => {
+      canvas.width  = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+    });
+    ro.observe(canvas);
+    canvas.width  = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+    return () => ro.disconnect();
+  }, []);
+
+  // ─── Render ────────────────────────────────────────────────────────────────
+  const posProfit = uiStats.profit >= 0;
+
+  return (
+    <div style={{
+      background: "#07090c",
+      color: "#c8d4e0",
+      fontFamily: '"Courier New", Courier, monospace',
+      height: "100%",
+      display: "flex",
+      flexDirection: "column",
+      overflow: "hidden",
+      userSelect: "none",
+    }}>
+
+      {/* ── Top header bar ──────────────────────────────────────────────────── */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 6, padding: "5px 12px",
+        borderBottom: "1px solid rgba(255,255,255,0.05)",
+        background: "rgba(255,255,255,0.01)", flexShrink: 0, flexWrap: "wrap", rowGap: 4,
+      }}>
+        <span style={{ color: "#e8ecf0", fontWeight: "bold", fontSize: 12, letterSpacing: 1 }}>PULSEMAP</span>
+        <span style={{ color: "rgba(140,160,190,0.45)", fontSize: 9.5, marginRight: 8 }}>ARB HEATMAP</span>
+
+        <div style={{ display: "flex", gap: 18, marginLeft: "auto", alignItems: "center", flexWrap: "wrap", rowGap: 4 }}>
+          <StatPill label="TRADES"  value={fmtK(uiStats.total)} />
+          <StatPill label="TPS"     value={fmtK(uiStats.tps)} valueColor="#00e676" />
+          <StatPill label="TOT P&L" value={`${posProfit ? "+" : ""}$${fmt2(uiStats.profit)}`} valueColor={posProfit ? "#00e676" : "#ff3a5c"} />
+          <span style={{ color: "rgba(120,140,165,0.5)", fontSize: 9, borderLeft: "1px solid rgba(255,255,255,0.05)", paddingLeft: 14 }}>
+            100ms · LIVE
+          </span>
+        </div>
+      </div>
+
+      {/* ── Body ────────────────────────────────────────────────────────────── */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
+
+        {/* ── Left: grid area ────────────────────────────────────────────────── */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "10px 0 8px 10px", overflow: "hidden", minWidth: 0 }}>
+
+          {/* Column (SELL) headers */}
+          <div style={{ display: "flex", marginLeft: 48, marginBottom: 2, flexShrink: 0 }}>
+            {EXCHANGES.map((_, i) => (
+              <div key={i} style={{ flex: 1 }}>
+                <ExLabel label={EX_SHORT[i]} sub="SELL" color="#ff3a5c" subColor="rgba(255,58,92,0.35)" />
+              </div>
+            ))}
+          </div>
+
+          {/* Row labels + canvas */}
+          <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+
+            {/* BUY row labels */}
+            <div style={{ width: 48, display: "flex", flexDirection: "column", flexShrink: 0 }}>
+              {EXCHANGES.map((_, i) => (
+                <div key={i} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 6 }}>
+                  <ExLabel label={EX_SHORT[i]} sub="BUY" color="#00ff40" subColor="rgba(0,230,118,0.3)" />
+                </div>
+              ))}
+            </div>
+
+            {/* Canvas */}
+            <div style={{ flex: 1, position: "relative", minWidth: 0, minHeight: 0 }}>
+              <canvas
+                ref={canvasRef}
+                style={{ display: "block", width: "100%", height: "100%" }}
+              />
+            </div>
+          </div>
+
+          {/* Legend row */}
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginLeft: 48, marginTop: 6, flexShrink: 0 }}>
+            {[
+              { label: "COLD", c: "#0c0e12", b: "rgba(255,255,255,0.1)" },
+              { label: "WARM", c: "rgb(220, 0, 0)", b: "transparent" },
+              { label: "HOT",  c: "rgb(1, 255, 5)", b: "transparent" },
+            ].map(({ label, c, b }) => (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <span style={{ width: 10, height: 10, borderRadius: 2, background: c, border: `0.5px solid ${b}`, display: "inline-block" }} />
+                <span style={{ fontSize: 8, color: "rgba(130,150,175,0.5)" }}>{label}</span>
+              </div>
+            ))}
+            <span style={{ fontSize: 8, color: "rgba(110,130,160,0.35)", marginLeft: 6 }}>
+              cell value = trade count · row = BUY exchange · col = SELL exchange
+            </span>
+          </div>
+        </div>
+
+        {/* ── Right: order history ────────────────────────────────────────────── */}
+        <div style={{
+          width: 228,
+          borderLeft: "1px solid rgba(255,255,255,0.05)",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          flexShrink: 0,
+        }}>
+          {/* Panel header */}
+          <div style={{
+            padding: "4px 10px",
+            borderBottom: "1px solid rgba(255,255,255,0.04)",
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            flexShrink: 0,
+          }}>
+            <span style={{ color: "rgba(120,140,165,0.6)", fontSize: 9.5 }}>ORDER HISTORY</span>
+            <span style={{
+              background: "rgba(0,230,118,0.1)", color: "#00e676",
+              fontSize: 8, padding: "1px 6px", borderRadius: 2,
+            }}>LIVE</span>
+          </div>
+
+          {/* Column labels */}
+          <div style={{
+            display: "flex", justifyContent: "space-between", padding: "2px 10px",
+            borderBottom: "1px solid rgba(255,255,255,0.03)",
+            color: "rgba(90,110,140,0.45)", fontSize: 8, flexShrink: 0,
+          }}>
+            <span>TIME · ROUTE · PAIR</span><span>P&L</span>
+          </div>
+
+          {/* Scrollable history */}
+          <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+            {uiHistory.map((t, i) => <HistRow key={i} trade={t} />)}
+            {uiHistory.length === 0 && (
+              <div style={{ padding: 16, color: "rgba(120,140,165,0.3)", fontSize: 10, textAlign: "center" }}>
+                Waiting for trades…
+              </div>
+            )}
+          </div>
+
+          {/* Exchange legend */}
+          <div style={{
+            padding: "5px 10px",
+            borderTop: "1px solid rgba(255,255,255,0.04)",
+            display: "flex", flexWrap: "wrap", gap: "3px 8px", flexShrink: 0,
+          }}>
+            {EXCHANGES.map((ex, i) => (
+              <span key={i} style={{ color: "rgba(120,140,165,0.4)", fontSize: 7.5, fontFamily: "monospace" }}>
+                <span style={{ color: "rgba(180,195,215,0.55)" }}>{EX_SHORT[i]}</span>={ex}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+
+
+
+
+
+
+export default function PulseMapView() {
+    return(
+        <>
+        <div className="h-[25%] text-sm w-full border-b border-black"><PulseMap demo={true} /></div>
+        </>
+    )
+}
+</file>
+
+<file path="interface/arbot/components/symbol.tsx">
+// interface/arbot/components/symbol.tsx
+"use client";
+
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
+import { List } from "react-window";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const EXCHANGES = [
+  { id: 0, name: "Binance", short: "BIN", color: "#f0b90b" },
+  { id: 1, name: "Coinbase", short: "CBP", color: "#0052ff" },
+  { id: 2, name: "Bybit", short: "BYB", color: "#f7a600" },
+  { id: 3, name: "Kraken", short: "KRK", color: "#5741d9" },
+  { id: 4, name: "OKX", short: "OKX", color: "#ffffff" },
+];
+
+// Common trading pairs across exchanges
+const COMMON_PAIRS = [
+  { base: "BTC", quote: "USDT", category: "Major" },
+  { base: "ETH", quote: "USDT", category: "Major" },
+  { base: "SOL", quote: "USDT", category: "Major" },
+  { base: "BNB", quote: "USDT", category: "Major" },
+  { base: "XRP", quote: "USDT", category: "Major" },
+  { base: "ADA", quote: "USDT", category: "Major" },
+  { base: "DOGE", quote: "USDT", category: "Major" },
+  { base: "AVAX", quote: "USDT", category: "Major" },
+  { base: "DOT", quote: "USDT", category: "Major" },
+  { base: "LINK", quote: "USDT", category: "Major" },
+  { base: "MATIC", quote: "USDT", category: "Major" },
+  { base: "UNI", quote: "USDT", category: "Major" },
+  { base: "ATOM", quote: "USDT", category: "Major" },
+  { base: "LTC", quote: "USDT", category: "Major" },
+  { base: "ETC", quote: "USDT", category: "Major" },
+  { base: "FIL", quote: "USDT", category: "Major" },
+  { base: "APT", quote: "USDT", category: "Major" },
+  { base: "ARB", quote: "USDT", category: "Major" },
+  { base: "OP", quote: "USDT", category: "Major" },
+  { base: "NEAR", quote: "USDT", category: "Major" },
+  { base: "INJ", quote: "USDT", category: "Major" },
+  { base: "TIA", quote: "USDT", category: "Major" },
+  { base: "SEI", quote: "USDT", category: "Major" },
+  { base: "SUI", quote: "USDT", category: "Major" },
+  { base: "RUNE", quote: "USDT", category: "Major" },
+  { base: "FTM", quote: "USDT", category: "Major" },
+  { base: "ALGO", quote: "USDT", category: "Major" },
+  { base: "SAND", quote: "USDT", category: "Major" },
+  { base: "MANA", quote: "USDT", category: "Major" },
+  { base: "AXS", quote: "USDT", category: "Major" },
+  { base: "GALA", quote: "USDT", category: "Major" },
+  { base: "ENS", quote: "USDT", category: "Major" },
+  { base: "LDO", quote: "USDT", category: "Major" },
+  { base: "GRT", quote: "USDT", category: "Major" },
+  { base: "SNX", quote: "USDT", category: "Major" },
+  { base: "COMP", quote: "USDT", category: "Major" },
+  { base: "AAVE", quote: "USDT", category: "Major" },
+  { base: "MKR", quote: "USDT", category: "Major" },
+  { base: "CRV", quote: "USDT", category: "Major" },
+  { base: "1INCH", quote: "USDT", category: "Major" },
+  { base: "ZRX", quote: "USDT", category: "Major" },
+  { base: "BAT", quote: "USDT", category: "Major" },
+  { base: "ENJ", quote: "USDT", category: "Major" },
+  { base: "CHZ", quote: "USDT", category: "Major" },
+  { base: "HOT", quote: "USDT", category: "Major" },
+  { base: "ZIL", quote: "USDT", category: "Major" },
+  { base: "KSM", quote: "USDT", category: "Major" },
+  { base: "XTZ", quote: "USDT", category: "Major" },
+  { base: "EGLD", quote: "USDT", category: "Major" },
+  { base: "FLOW", quote: "USDT", category: "Major" },
+  { base: "ICP", quote: "USDT", category: "Major" },
+  { base: "QNT", quote: "USDT", category: "Major" },
+  { base: "ROSE", quote: "USDT", category: "Major" },
+  { base: "IMX", quote: "USDT", category: "Major" },
+  { base: "MINA", quote: "USDT", category: "Major" },
+  { base: "APE", quote: "USDT", category: "Major" },
+  { base: "BLUR", quote: "USDT", category: "Major" },
+  { base: "PYTH", quote: "USDT", category: "Major" },
+  { base: "JTO", quote: "USDT", category: "Major" },
+  { base: "JUP", quote: "USDT", category: "Major" },
+  { base: "WIF", quote: "USDT", category: "Major" },
+  { base: "BONK", quote: "USDT", category: "Major" },
+  { base: "ORDI", quote: "USDT", category: "Major" },
+  { base: "SATS", quote: "USDT", category: "Major" },
+  { base: "RNDR", quote: "USDT", category: "Major" },
+  { base: "FET", quote: "USDT", category: "Major" },
+  { base: "AGIX", quote: "USDT", category: "Major" },
+  { base: "OCEAN", quote: "USDT", category: "Major" },
+  { base: "WLD", quote: "USDT", category: "Major" },
+  { base: "STRK", quote: "USDT", category: "Major" },
+  { base: "ENA", quote: "USDT", category: "Major" },
+  { base: "ETHFI", quote: "USDT", category: "Major" },
+  { base: "REZ", quote: "USDT", category: "Major" },
+  { base: "SAFE", quote: "USDT", category: "Major" },
+  { base: "ZK", quote: "USDT", category: "Major" },
+  { base: "ZRO", quote: "USDT", category: "Major" },
+  { base: "IO", quote: "USDT", category: "Major" },
+  { base: "NOT", quote: "USDT", category: "Major" },
+  { base: "BB", quote: "USDT", category: "Major" },
+  { base: "LISTA", quote: "USDT", category: "Major" },
+];
+
+// Generate all symbols across all exchanges
+function generateAllSymbols() {
+  const symbols: SymbolData[] = [];
+  let id = 0;
+  
+  COMMON_PAIRS.forEach((pair) => {
+    EXCHANGES.forEach((exchange) => {
+      symbols.push({
+        id: id++,
+        symbol: `${pair.base}/${pair.quote}`,
+        base: pair.base,
+        quote: pair.quote,
+        exchangeId: exchange.id,
+        exchangeName: exchange.name,
+        exchangeShort: exchange.short,
+        category: pair.category,
+        // Simulated data
+        price: 0,
+        change24h: 0,
+        volume24h: 0,
+        spread: 0,
+        high24h: 0,
+        low24h: 0,
+      });
+    });
+  });
+  
+  return symbols;
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface SymbolData {
+  id: number;
+  symbol: string;
+  base: string;
+  quote: string;
+  exchangeId: number;
+  exchangeName: string;
+  exchangeShort: string;
+  category: string;
+  price: number;
+  change24h: number;
+  volume24h: number;
+  spread: number;
+  high24h: number;
+  low24h: number;
+}
+
+interface SymbolStats {
+  totalSymbols: number;
+  positiveGainers: number;
+  negativeGainers: number;
+  highestVolume: { symbol: string; volume: number };
+  bestPerformer: { symbol: string; change: number };
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const fmt2 = (n: number) => n.toFixed(2);
+const fmt4 = (n: number) => n.toFixed(4);
+const fmtK = (n: number) =>
+  n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(Math.round(n));
+
+// Price simulation
+function simulatePrice(base: string): number {
+  const hash = base.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  const basePrice = (hash % 10000) + 10;
+  const noise = (Math.random() - 0.5) * basePrice * 0.02;
+  return basePrice + noise;
+}
+
+// ─── Sub-component: Symbol Row ────────────────────────────────────────────────
+const SymbolRow = ({ symbols, selectedSymbol, onSelect, index, style }: any) => {
+  const sym = symbols[index];
+  const isSelected = selectedSymbol?.id === sym.id;
+  const isPositive = sym.change24h >= 0;
+  const exchangeColor = EXCHANGES.find(e => e.id === sym.exchangeId)?.color || "#fff";
+
+  return (
+    <div
+      style={{
+        ...style,
+        display: "flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "0 6px",
+        borderBottom: "1px solid rgba(255,255,255,0.02)",
+        fontSize: 9,
+        background: isSelected ? "rgba(0,230,118,0.08)" : "transparent",
+        cursor: "pointer",
+        boxSizing: "border-box",
+        transition: "background 0.1s",
+      }}
+      onClick={() => onSelect(sym)}
+      onMouseEnter={(e) => {
+        if (!isSelected) e.currentTarget.style.background = "rgba(255,255,255,0.02)";
+      }}
+      onMouseLeave={(e) => {
+        if (!isSelected) e.currentTarget.style.background = "transparent";
+      }}
+    >
+      {/* Exchange badge */}
+      <span
+        style={{
+          width: 28,
+          fontSize: 7,
+          fontWeight: "bold",
+          color: exchangeColor,
+          opacity: 0.8,
+          textAlign: "center",
+          background: `${exchangeColor}15`,
+          borderRadius: 2,
+          padding: "1px 3px",
+          flexShrink: 0,
+        }}
+      >
+        {sym.exchangeShort}
+      </span>
+
+      {/* Symbol name */}
+      <span
+        style={{
+          color: "#e8ecf0",
+          fontWeight: isSelected ? "bold" : "normal",
+          width: 70,
+          flexShrink: 0,
+          fontFamily: "monospace",
+          fontSize: 9.5,
+        }}
+      >
+        {sym.symbol}
+      </span>
+
+      {/* Price */}
+      <span
+        style={{
+          color: "rgba(200,210,225,0.9)",
+          width: 65,
+          textAlign: "right",
+          fontFamily: "monospace",
+          flexShrink: 0,
+        }}
+      >
+        ${fmt2(sym.price)}
+      </span>
+
+      {/* 24h Change */}
+      <span
+        style={{
+          color: isPositive ? "#00e676" : "#ff3a5c",
+          width: 55,
+          textAlign: "right",
+          fontFamily: "monospace",
+          fontWeight: "bold",
+          flexShrink: 0,
+        }}
+      >
+        {isPositive ? "+" : ""}{fmt2(sym.change24h)}%
+      </span>
+
+      {/* Volume */}
+      <span
+        style={{
+          color: "rgba(150,165,185,0.7)",
+          width: 60,
+          textAlign: "right",
+          fontSize: 8.5,
+          flexShrink: 0,
+        }}
+      >
+        {fmtK(sym.volume24h)}
+      </span>
+
+      {/* Spread */}
+      <span
+        style={{
+          color: "rgba(150,165,185,0.6)",
+          width: 45,
+          textAlign: "right",
+          fontSize: 8,
+          flexShrink: 0,
+        }}
+      >
+        {sym.spread.toFixed(3)}%
+      </span>
+    </div>
+  );
+};;
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+const SymbolView = forwardRef(function SymbolView(
+  { demo = true }: { demo?: boolean },
+  ref
+) {
+  const allSymbols = useMemo(() => generateAllSymbols(), []);
+  const [symbols, setSymbols] = useState<SymbolData[]>(allSymbols);
+  const [selectedSymbol, setSelectedSymbol] = useState<SymbolData | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterExchange, setFilterExchange] = useState<number | null>(null);
+  const [sortBy, setSortBy] = useState<string>("symbol");
+  const [sortAsc, setSortAsc] = useState(true);
+  const [view, setView] = useState<"all" | "watchlist">("all");
+  const [watchlist, setWatchlist] = useState<Set<number>>(new Set());
+  const listRef = useRef<any>(null);
+
+  // ── Price simulation ───────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!demo) return;
+    const interval = setInterval(() => {
+      setSymbols((prev) =>
+        prev.map((sym) => ({
+          ...sym,
+          price: simulatePrice(sym.base),
+          change24h: (Math.random() - 0.48) * 10,
+          volume24h: Math.random() * 1000000000,
+          spread: Math.random() * 0.5,
+          high24h: sym.high24h || sym.price * 1.05,
+          low24h: sym.low24h || sym.price * 0.95,
+        }))
+      );
+    }, 100);
+    return () => clearInterval(interval);
+  }, [demo]);
+
+  // ── Filter and sort symbols ─────────────────────────────────────────────────
+  const filteredSymbols = useMemo(() => {
+    let result = view === "watchlist" 
+      ? symbols.filter(s => watchlist.has(s.id))
+      : [...symbols];
+
+    // Search filter
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      result = result.filter(
+        (s) =>
+          s.symbol.toLowerCase().includes(query) ||
+          s.base.toLowerCase().includes(query) ||
+          s.exchangeName.toLowerCase().includes(query)
+      );
+    }
+
+    // Exchange filter
+    if (filterExchange !== null) {
+      result = result.filter((s) => s.exchangeId === filterExchange);
+    }
+
+    // Sort
+    result.sort((a, b) => {
+      let comparison = 0;
+      switch (sortBy) {
+        case "symbol":
+          comparison = a.symbol.localeCompare(b.symbol);
+          break;
+        case "price":
+          comparison = a.price - b.price;
+          break;
+        case "change":
+          comparison = a.change24h - b.change24h;
+          break;
+        case "volume":
+          comparison = a.volume24h - b.volume24h;
+          break;
+        case "exchange":
+          comparison = a.exchangeName.localeCompare(b.exchangeName);
+          break;
+        default:
+          comparison = 0;
+      }
+      return sortAsc ? comparison : -comparison;
+    });
+
+    return result;
+  }, [symbols, searchQuery, filterExchange, sortBy, sortAsc, view, watchlist]);
+
+  // ── Stats calculation ──────────────────────────────────────────────────────
+  const stats: SymbolStats = useMemo(() => {
+    const positive = filteredSymbols.filter((s) => s.change24h > 0).length;
+    const highestVol = filteredSymbols.reduce(
+      (max, s) => (s.volume24h > max.volume ? { symbol: s.symbol, volume: s.volume24h } : max),
+      { symbol: "", volume: 0 }
+    );
+    const bestPerf = filteredSymbols.reduce(
+      (max, s) => (s.change24h > max.change ? { symbol: s.symbol, change: s.change24h } : max),
+      { symbol: "", change: -Infinity }
+    );
+    return {
+      totalSymbols: filteredSymbols.length,
+      positiveGainers: positive,
+      negativeGainers: filteredSymbols.length - positive,
+      highestVolume: highestVol,
+      bestPerformer: bestPerf,
+    };
+  }, [filteredSymbols]);
+
+  // ── Handlers ────────────────────────────────────────────────────────────────
+  const handleSelect = useCallback((sym: SymbolData) => {
+    setSelectedSymbol(sym);
+  }, []);
+
+  const toggleWatchlist = useCallback((symbolId: number) => {
+    setWatchlist((prev) => {
+      const next = new Set(prev);
+      if (next.has(symbolId)) {
+        next.delete(symbolId);
+      } else {
+        next.add(symbolId);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleSort = (column: string) => {
+    if (sortBy === column) {
+      setSortAsc(!sortAsc);
+    } else {
+      setSortBy(column);
+      setSortAsc(true);
+    }
+  };
+
+  // ── Expose API ─────────────────────────────────────────────────────────────
+  useImperativeHandle(ref, () => ({
+    getSelectedSymbol: () => selectedSymbol,
+    getWatchlist: () => watchlist,
+    getAllSymbols: () => symbols,
+  }));
+
+  return (
+    <div
+      style={{
+        background: "#07090c",
+        color: "#c8d4e0",
+        fontFamily: '"Courier New", Courier, monospace',
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        userSelect: "none",
+        borderRight: "1px solid rgba(255,255,255,0.05)",
+      }}
+    >
+      {/* ── Header ──────────────────────────────────────────────────────────── */}
+      <div
+        style={{
+          padding: "8px 10px 4px",
+          borderBottom: "1px solid rgba(255,255,255,0.05)",
+          background: "rgba(255,255,255,0.01)",
+          flexShrink: 0,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+          <span style={{ color: "#e8ecf0", fontWeight: "bold", fontSize: 12, letterSpacing: 0.5 }}>
+            SYMBOLS
+          </span>
+          <span style={{ color: "rgba(120,140,165,0.6)", fontSize: 9 }}>
+            {stats.totalSymbols} pairs
+          </span>
+        </div>
+
+        {/* Search bar */}
+        <input
+          type="text"
+          placeholder="Search symbol, base, exchange..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          style={{
+            width: "100%",
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            color: "#e0e6f0",
+            padding: "5px 8px",
+            fontSize: 9.5,
+            fontFamily: "inherit",
+            borderRadius: 3,
+            outline: "none",
+            boxSizing: "border-box",
+            marginBottom: 4,
+          }}
+        />
+      </div>
+
+      {/* ── Exchange filters ────────────────────────────────────────────────── */}
+      <div
+        style={{
+          display: "flex",
+          gap: 3,
+          padding: "4px 10px",
+          borderBottom: "1px solid rgba(255,255,255,0.03)",
+          flexShrink: 0,
+          flexWrap: "wrap",
+        }}
+      >
+        <button
+          onClick={() => setFilterExchange(null)}
+          style={{
+            background: filterExchange === null ? "rgba(0,230,118,0.1)" : "transparent",
+            border: filterExchange === null ? "1px solid rgba(0,230,118,0.3)" : "1px solid transparent",
+            color: filterExchange === null ? "#00e676" : "rgba(150,165,185,0.6)",
+            fontSize: 8,
+            padding: "2px 6px",
+            borderRadius: 2,
+            cursor: "pointer",
+            fontFamily: "inherit",
+          }}
+        >
+          ALL
+        </button>
+        {EXCHANGES.map((ex) => (
+          <button
+            key={ex.id}
+            onClick={() => setFilterExchange(ex.id)}
+            style={{
+              background: filterExchange === ex.id ? `${ex.color}15` : "transparent",
+              border: filterExchange === ex.id ? `1px solid ${ex.color}40` : "1px solid transparent",
+              color: filterExchange === ex.id ? ex.color : "rgba(150,165,185,0.6)",
+              fontSize: 8,
+              padding: "2px 6px",
+              borderRadius: 2,
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            {ex.short}
+          </button>
+        ))}
+        <button
+          onClick={() => setView(view === "all" ? "watchlist" : "all")}
+          style={{
+            marginLeft: "auto",
+            background: view === "watchlist" ? "rgba(245,197,24,0.1)" : "transparent",
+            border: view === "watchlist" ? "1px solid rgba(245,197,24,0.3)" : "1px solid transparent",
+            color: view === "watchlist" ? "#f5c518" : "rgba(150,165,185,0.6)",
+            fontSize: 8,
+            padding: "2px 6px",
+            borderRadius: 2,
+            cursor: "pointer",
+            fontFamily: "inherit",
+          }}
+        >
+          ★ {watchlist.size}
+        </button>
+      </div>
+
+      {/* ── Stats bar ───────────────────────────────────────────────────────── */}
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          padding: "4px 10px",
+          borderBottom: "1px solid rgba(255,255,255,0.03)",
+          fontSize: 8,
+          color: "rgba(120,140,165,0.5)",
+          flexShrink: 0,
+          flexWrap: "wrap",
+        }}
+      >
+        
+      </div>
+
+      {/* ── Column headers ──────────────────────────────────────────────────── */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+          padding: "3px 6px",
+          borderBottom: "1px solid rgba(255,255,255,0.04)",
+          color: "rgba(90,110,140,0.5)",
+          fontSize: 8,
+          flexShrink: 0,
+          cursor: "pointer",
+        }}
+      >
+        <span style={{ width: 28, flexShrink: 0 }}>EX</span>
+        <span
+          style={{ width: 70, flexShrink: 0 }}
+          onClick={() => handleSort("symbol")}
+        >
+          PAIR {sortBy === "symbol" ? (sortAsc ? "↑" : "↓") : ""}
+        </span>
+        <span
+          style={{ width: 65, textAlign: "right", flexShrink: 0 }}
+          onClick={() => handleSort("price")}
+        >
+          PRICE {sortBy === "price" ? (sortAsc ? "↑" : "↓") : ""}
+        </span>
+        <span
+          style={{ width: 55, textAlign: "right", flexShrink: 0 }}
+          onClick={() => handleSort("change")}
+        >
+          24H% {sortBy === "change" ? (sortAsc ? "↑" : "↓") : ""}
+        </span>
+        <span
+          style={{ width: 60, textAlign: "right", flexShrink: 0 }}
+          onClick={() => handleSort("volume")}
+        >
+          VOL {sortBy === "volume" ? (sortAsc ? "↑" : "↓") : ""}
+        </span>
+        <span style={{ width: 45, textAlign: "right", flexShrink: 0 }}>SPREAD</span>
+      </div>
+
+      {/* ── Symbol list (virtualized) ───────────────────────────────────────── */}
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {filteredSymbols.length > 0 ? (
+          <List
+            rowCount={filteredSymbols.length}
+            rowHeight={24}
+            rowComponent={SymbolRow}
+            rowProps={{
+              symbols: filteredSymbols,
+              selectedSymbol,
+              onSelect: handleSelect,
+            }}
+            style={{ height: "100%", width: "100%", overflow: "auto" }}
+          />
+        ) : (
+          <div
+            style={{
+              padding: 16,
+              color: "rgba(120,140,165,0.3)",
+              fontSize: 10,
+              textAlign: "center",
+            }}
+          >
+            No symbols found
+          </div>
+        )}
+      </div>
+
+      {/* ── Selected symbol detail ──────────────────────────────────────────── */}
+      {selectedSymbol && (
+        <div
+          style={{
+            padding: "6px 10px",
+            borderTop: "1px solid rgba(255,255,255,0.05)",
+            background: "rgba(0,230,118,0.05)",
+            flexShrink: 0,
+            fontSize: 9,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+            <span style={{ color: "#e8ecf0", fontWeight: "bold" }}>
+              {selectedSymbol.symbol}
+              <span style={{ color: "rgba(150,165,185,0.5)", marginLeft: 6, fontWeight: "normal" }}>
+                {selectedSymbol.exchangeName}
+              </span>
+            </span>
+            <button
+              onClick={() => toggleWatchlist(selectedSymbol.id)}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: watchlist.has(selectedSymbol.id) ? "#f5c518" : "rgba(150,165,185,0.5)",
+                cursor: "pointer",
+                fontSize: 12,
+                padding: 0,
+              }}
+            >
+              {watchlist.has(selectedSymbol.id) ? "★" : "☆"}
+            </button>
+          </div>
+          <div style={{ display: "flex", gap: 12, color: "rgba(150,165,185,0.7)" }}>
+            <span>Price: <span style={{ color: "#e0e6f0" }}>${fmt2(selectedSymbol.price)}</span></span>
+            <span>24h: <span style={{ color: selectedSymbol.change24h >= 0 ? "#00e676" : "#ff3a5c" }}>{fmt2(selectedSymbol.change24h)}%</span></span>
+            <span>Vol: <span style={{ color: "#e0e6f0" }}>{fmtK(selectedSymbol.volume24h)}</span></span>
+            <span>Spread: <span style={{ color: "#e0e6f0" }}>{selectedSymbol.spread.toFixed(3)}%</span></span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Footer ──────────────────────────────────────────────────────────── */}
+      <div
+        style={{
+          padding: "3px 10px",
+          borderTop: "1px solid rgba(255,255,255,0.04)",
+          display: "flex",
+          justifyContent: "space-between",
+          color: "rgba(100,120,145,0.55)",
+          fontSize: 8,
+          flexShrink: 0,
+        }}
+      >
+        <span>{filteredSymbols.length} symbols</span>
+        <span>{EXCHANGES.length} exchanges</span>
+        <span>LIVE</span>
+      </div>
+    </div>
+  );
+});
+
+// ─── Wrapper for page ────────────────────────────────────────────────────────
+export default function Symbol() {
+  return (
+    <div className="h-full text-sm w-[15%] border-r border-black ">
+      <SymbolView demo={true} />
+    </div>
+  );
+}
+</file>
+
+<file path="interface/arbot/.gitignore">
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+</file>
+
+<file path="interface/arbot/AGENTS.md">
+<!-- BEGIN:nextjs-agent-rules -->
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
+<!-- END:nextjs-agent-rules -->
+</file>
+
+<file path="interface/arbot/CLAUDE.md">
+@AGENTS.md
+</file>
+
+<file path="interface/arbot/eslint.config.mjs">
+import { defineConfig, globalIgnores } from "eslint/config";
+import nextVitals from "eslint-config-next/core-web-vitals";
+import nextTs from "eslint-config-next/typescript";
+
+const eslintConfig = defineConfig([
+  ...nextVitals,
+  ...nextTs,
+  // Override default ignores of eslint-config-next.
+  globalIgnores([
+    // Default ignores of eslint-config-next:
+    ".next/**",
+    "out/**",
+    "build/**",
+    "next-env.d.ts",
+  ]),
+]);
+
+export default eslintConfig;
+</file>
+
+<file path="interface/arbot/next.config.ts">
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  /* config options here */
+};
+
+export default nextConfig;
+</file>
+
+<file path="interface/arbot/package.json">
+{
+  "name": "arbot",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "next": "16.2.4",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-window": "^2.2.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.4",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
+</file>
+
+<file path="interface/arbot/postcss.config.mjs">
+const config = {
+  plugins: {
+    "@tailwindcss/postcss": {},
+  },
+};
+
+export default config;
+</file>
+
+<file path="interface/arbot/README.md">
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+
+## Getting Started
+
+First, run the development server:
+
+```bash
+npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+
+## Learn More
+
+To learn more about Next.js, take a look at the following resources:
+
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+
+## Deploy on Vercel
+
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+</file>
+
+<file path="interface/arbot/tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts"
+  ],
+  "exclude": ["node_modules"]
+}
+</file>
+
+<file path="main.cpp">
+#include "exchange/BaseExchange.h"
+#include "datapipeline/dataPipeline.h"
+#include <iostream>
+#include <csignal>
+#include <atomic>
+
+std::atomic<bool> running{true};
+
+void signal_handler(int signal) {
+    running = false;
+}
+
+int main() {
+    // Set up signal handling for graceful shutdown
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
+    
+    try {
+        // Create exchange instances
+        auto jupiter = std::make_shared<Exchange1>();
+        
+        // Get pipeline instance
+        auto& pipeline = DataPipeline::get_instance();
+        
+        // Register exchanges
+        pipeline.register_exchange(jupiter);
+        
+        // Set custom data handler (optional)
+        pipeline.set_data_handler([](const MarketData& data) {
+            // Custom processing logic
+            // This is where you connect to your trading system
+            
+            // Example: Log to database, send to strategy engine, etc.
+            std::cout << "[CUSTOM] " 
+                     << data.exchange_id << " " 
+                     << data.symbol << " "
+                     << data.price << " "
+                     << data.bid << " " 
+                     << data.ask << " "
+                     << data.timestamp 
+                     << std::endl;
+        });
+        
+        // Start pipeline (connects to exchanges)
+        pipeline.start();
+        
+        // Subscribe to Jupiter perpetuals symbols
+        std::vector<std::string> symbols = {
+            "SOL-PERP",
+            "BTC-PERP", 
+            "ETH-PERP",
+            // Add more symbols as needed
+        };
+        pipeline.subscribe_all(symbols);
+        
+        std::cout << "[MAIN] System running. Press Ctrl+C to stop..." << std::endl;
+        
+        // Keep main thread alive
+        while (running) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        
+        std::cout << "[MAIN] Shutting down..." << std::endl;
+        pipeline.stop();
+        
+    } catch (const std::exception& e) {
+        std::cerr << "[MAIN] Fatal error: " << e.what() << std::endl;
+        return 1;
+    }
+    
+    return 0;
+}
+</file>
+
+<file path=".gitignore">
+# This file is used to ignore files which are generated
+# ----------------------------------------------------------------------------
+
+*~
+*.autosave
+*.a
+*.core
+*.moc
+*.o
+*.obj
+*.orig
+*.rej
+*.so
+*.so.*
+*_pch.h.cpp
+*_resource.rc
+*.qm
+.#*
+*.*#
+core
+!core/
+tags
+.DS_Store
+.directory
+*.debug
+Makefile*
+*.prl
+*.app
+moc_*.cpp
+ui_*.h
+qrc_*.cpp
+Thumbs.db
+*.res
+*.rc
+/.qmake.cache
+/.qmake.stash
+
+# qtcreator generated files
+*.pro.user*
+*.qbs.user*
+CMakeLists.txt.user*
+
+# xemacs temporary files
+*.flc
+
+# Vim temporary files
+.*.swp
+
+# Visual Studio generated files
+*.ib_pdb_index
+*.idb
+*.ilk
+*.pdb
+*.sln
+*.suo
+*.vcproj
+*vcproj.*.*.user
+*.ncb
+*.sdf
+*.opensdf
+*.vcxproj
+*vcxproj.*
+
+# MinGW generated files
+*.Debug
+*.Release
+
+# Python byte code
+*.pyc
+
+# Binaries
+# --------
+*.dll
+*.exe
+
+# Directories with generated files
+.moc/
+.obj/
+.pch/
+.rcc/
+.uic/
+/build*/
+</file>
+
+<file path="CMakeLists.txt">
+cmake_minimum_required(VERSION 3.15)
+project(JupiterPerpsFeed)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Find packages
+find_package(Boost REQUIRED COMPONENTS)
+find_package(nlohmann_json REQUIRED)
+find_package(OpenSSL REQUIRED)
+
+# Include directories
+include_directories(${Boost_INCLUDE_DIRS})
+include_directories(${OPENSSL_INCLUDE_DIR})
+
+# Main executable
+add_executable(jupiter_feed
+    main.cpp
+    exchange/Exchange1.cpp
+    datapipeline/dataPipeline.cpp
+)
+
+# Link libraries
+target_link_libraries(jupiter_feed
+    ${Boost_LIBRARIES}
+    ${OPENSSL_LIBRARIES}
+    nlohmann_json::nlohmann_json
+)
+
+# Thread support
+find_package(Threads REQUIRED)
+target_link_libraries(jupiter_feed Threads::Threads)
+</file>
+
+<file path="README.md">
+
+</file>
+
+</files>

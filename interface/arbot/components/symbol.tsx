@@ -697,7 +697,7 @@ const SymbolView = forwardRef(function SymbolView(
 // ─── Wrapper for page ────────────────────────────────────────────────────────
 export default function Symbol() {
   return (
-    <div className="h-full text-sm w-[15%] border-r border-black">
+    <div className="h-full text-sm w-[15%] border-r border-black ">
       <SymbolView demo={true} />
     </div>
   );

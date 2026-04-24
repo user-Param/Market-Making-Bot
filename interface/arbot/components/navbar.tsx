@@ -146,15 +146,10 @@ export default function Navbar() {
           fontSize: "clamp(10px, 0.9vw, 13px)",
           letterSpacing: 1.5,
           textShadow: "0 0 10px rgba(0,230,118,0.3)",
+          paddingRight: "50px",
+          paddingLeft: "50px"
         }}>
-          ARB
-        </span>
-        <span style={{
-          color: "rgba(255,255,255,0.3)",
-          fontSize: "clamp(7px, 0.6vw, 9px)",
-          letterSpacing: 0.5,
-        }}>
-          TERMINAL
+          AVA
         </span>
       </div>
 
