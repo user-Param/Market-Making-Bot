@@ -23,14 +23,14 @@ qt_standard_project_setup(REQUIRES 6.8)
 set_source_files_properties(StrategyEngine/strategy.c PROPERTIES LANGUAGE C)
 
 # Create executable
-qt_add_executable(appcryptoArbitrage
+qt_add_executable(Market-making-bot
     main.cpp
     dataPipeline.cpp
     StrategyEngine/strategy.c
 )
 
 # Set bundle properties
-set_target_properties(appcryptoArbitrage PROPERTIES
+set_target_properties(Market-making-bot PROPERTIES
     MACOSX_BUNDLE TRUE
     WIN32_EXECUTABLE TRUE
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
@@ -38,7 +38,7 @@ set_target_properties(appcryptoArbitrage PROPERTIES
 )
 
 # Link libraries - ADD Qt6::Core and Qt6::Network
-target_link_libraries(appcryptoArbitrage
+target_link_libraries(Market-making-bot
     PRIVATE Qt6::Core
     PRIVATE Qt6::Network
     PRIVATE Qt6::WebSockets
@@ -46,18 +46,18 @@ target_link_libraries(appcryptoArbitrage
 )
 
 # Enable AUTOMOC for dataPipeline.h
-set_target_properties(appcryptoArbitrage PROPERTIES
+set_target_properties(Market-making-bot PROPERTIES
     AUTOMOC ON
 )
 
 # Include directories
-target_include_directories(appcryptoArbitrage PRIVATE
+target_include_directories(Market-making-bot PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/StrategyEngine
 )
 
 include(GNUInstallDirs)
-install(TARGETS appcryptoArbitrage
+install(TARGETS Market-making-bot
     BUNDLE DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
