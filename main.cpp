@@ -1,5 +1,6 @@
 #include "exchange/BaseExchange.h"
 #include "datapipeline/dataPipeline.h"
+#include "strategy/ImbalanceStrategy.h"
 #include <iostream>
 #include <csignal>
 #include <atomic>
@@ -16,6 +17,9 @@ int main() {
     std::signal(SIGTERM, signal_handler);
     
     try {
+        // Instantiate the strategy
+        auto strategy = std::make_shared<ImbalanceStrategy>();
+        
         // Create exchange instances
         auto jupiter = std::make_shared<Exchange1>();
         
@@ -25,20 +29,21 @@ int main() {
         // Register exchanges
         pipeline.register_exchange(jupiter);
         
-        // Set custom data handler (optional)
-        pipeline.set_data_handler([](const MarketData& data) {
-            // Custom processing logic
-            // This is where you connect to your trading system
+        // Connect Datafeed to Strategy
+        pipeline.set_data_handler([strategy](const MarketData& data) {
+            // 1. Process data through the strategy
+            Signal signal = strategy->onMarketData(data);
             
-            // Example: Log to database, send to strategy engine, etc.
-            std::cout << "[CUSTOM] " 
-                     << data.exchange_id << " " 
-                     << data.symbol << " "
-                     << data.price << " "
-                     << data.bid << " " 
-                     << data.ask << " "
-                     << data.timestamp 
-                     << std::endl;
+            // 2. Log high-speed feed update
+            // std::cout << "[FEED] " << data.symbol << " | Price: " << data.price 
+            //           << " | BidQty: " << data.bid_qty << " | AskQty: " << data.ask_qty << std::endl;
+
+            // 3. Emit Signal if generated
+            if (signal.type != SignalType::NONE) {
+                std::string side = (signal.type == SignalType::BUY) ? "BUY" : "SELL";
+                std::cout << ">>> [STRATEGY SIGNAL] " << side << " " << signal.symbol 
+                          << " @ " << signal.price << " [TS: " << signal.timestamp << "]" << std::endl;
+            }
         });
         
         // Start pipeline (connects to exchanges)
@@ -49,11 +54,10 @@ int main() {
             "SOL-PERP",
             "BTC-PERP", 
             "ETH-PERP",
-            // Add more symbols as needed
         };
         pipeline.subscribe_all(symbols);
         
-        std::cout << "[MAIN] System running. Press Ctrl+C to stop..." << std::endl;
+        std::cout << "[MAIN] HFT System Active. Strategy: Imbalance" << std::endl;
         
         // Keep main thread alive
         while (running) {

@@ -18,6 +18,7 @@ add_executable(jupiter_feed
     main.cpp
     exchange/Exchange1.cpp
     datapipeline/dataPipeline.cpp
+    strategy/ImbalanceStrategy.cpp
 )
 
 # Link libraries
