@@ -112,7 +112,8 @@ private:
     std::vector<std::string> subscribed_symbols_;
     std::thread stream_thread_;
     mutable std::mutex symbols_mutex_;
-    
+    mutable std::mutex stream_mutex_;
+
     const std::string host_ = "perps-api.jup.ag";
     const std::string port_ = "443";
 };

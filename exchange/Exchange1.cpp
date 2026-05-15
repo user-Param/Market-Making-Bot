@@ -93,16 +93,19 @@ void Exchange1::stream_loop() {
                 req.set(http::field::user_agent, "ArbBot/1.0");
                 req.set(http::field::connection, "keep-alive");
 
-                http::write(*stream_, req);
+                {
+                    std::lock_guard<std::mutex> lock(stream_mutex_);
+                    http::write(*stream_, req);
 
-                beast::flat_buffer buffer;
-                http::response<http::string_body> res;
-                http::read(*stream_, buffer, res);
+                    beast::flat_buffer buffer;
+                    http::response<http::string_body> res;
+                    http::read(*stream_, buffer, res);
 
-                if (res.result() == http::status::ok) {
-                    fast_parse_and_callback(res.body(), symbol);
-                } else {
-                    std::cerr << "[JUPITER] API Error: " << res.result_int() << " for " << symbol << std::endl;
+                    if (res.result() == http::status::ok) {
+                        fast_parse_and_callback(res.body(), symbol);
+                    } else {
+                        std::cerr << "[JUPITER] API Error: " << res.result_int() << " for " << symbol << std::endl;
+                    }
                 }
             } catch (const std::exception& e) {
                 if (running_) {
@@ -158,8 +161,42 @@ void Exchange1::fast_parse_and_callback(const std::string& body, const std::stri
 }
 
 bool Exchange1::place_order(const Order& order) {
-    std::cout << "[JUPITER] MOCK ORDER PLACED: " 
-              << (order.side == OrderSide::BUY ? "BUY" : "SELL") << " "
-              << order.quantity << " " << order.symbol << " @ " << order.price << std::endl;
-    return true;
+    if (!connected_) return false;
+
+    try {
+        nlohmann::json body;
+        body["symbol"] = order.symbol;
+        body["side"] = (order.side == OrderSide::BUY ? "buy" : "sell");
+        body["type"] = (order.type == OrderType::MARKET ? "market" : "limit");
+        body["quantity"] = order.quantity;
+        body["price"] = order.price;
+        body["clientOrderId"] = order.client_order_id;
+
+        http::request<http::string_body> req{http::verb::post, "/v1/order", 11};
+        req.set(http::field::host, host_);
+        req.set(http::field::content_type, "application/json");
+        req.set("X-API-KEY", "jup_953d30a2d733451d81a9d8b7cb72871cdfcfe00dd6cdc4215ee55928136a34e8");
+        req.body() = body.dump();
+        req.prepare_payload();
+
+        {
+            std::lock_guard<std::mutex> lock(stream_mutex_);
+            http::write(*stream_, req);
+
+            beast::flat_buffer buffer;
+            http::response<http::string_body> res;
+            http::read(*stream_, buffer, res);
+
+            if (res.result() == http::status::ok) {
+                std::cout << "[JUPITER] Order placed successfully: " << order.client_order_id << std::endl;
+                return true;
+            } else {
+                std::cerr << "[JUPITER] Order placement failed: " << res.result_int() << " " << res.body() << std::endl;
+                return false;
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[JUPITER] Critical error during order placement: " << e.what() << std::endl;
+        return false;
+    }
 }
