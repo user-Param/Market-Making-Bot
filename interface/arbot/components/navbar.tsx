@@ -1,37 +1,28 @@
 // interface/arbot/components/navbar.tsx
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
+import { useWebSocket } from "../hooks/useWebSocket";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const EXCHANGES = [
-  { id: 0, name: "Binance", short: "BIN", color: "#f0b90b" },
-  { id: 1, name: "Coinbase", short: "CBP", color: "#0052ff" },
-  { id: 2, name: "Bybit", short: "BYB", color: "#f7a600" },
-  { id: 3, name: "Kraken", short: "KRK", color: "#5741d9" },
-  { id: 4, name: "OKX", short: "OKX", color: "#ffffff" },
+  { id: 0, name: "Jupiter", short: "JUP", color: "#00e676" },
+  { id: 1, name: "Binance", short: "BIN", color: "#f0b90b" },
+  { id: 2, name: "Coinbase", short: "CBP", color: "#0052ff" },
+  { id: 3, name: "Bybit", short: "BYB", color: "#f7a600" },
+  { id: 4, name: "Kraken", short: "KRK", color: "#5741d9" },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmtK = (n: number) =>
   n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(Math.round(n));
-const fmt2 = (n: number) => n.toFixed(2);
-
-// ─── System time hook ────────────────────────────────────────────────────────
-function useSystemTime() {
-  const [time, setTime] = useState(new Date());
-  
-  useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 100);
-    return () => clearInterval(timer);
-  }, []);
-  
-  return time;
-}
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function Navbar() {
-  const systemTime = useSystemTime();
+  const [mounted, setMounted] = useState(false);
+  const [systemTime, setSystemTime] = useState(new Date());
+  const { data: wsData, connected: wsConnected } = useWebSocket("ws://localhost:9001");
+  
   const [stats, setStats] = useState({
     tps: 0,
     totalTrades: 0,
@@ -41,51 +32,71 @@ export default function Navbar() {
     cpu: 0,
     pnl: 0,
     positions: 0,
-    activeStrategies: 2,
+    activeStrategies: 1,
   });
   
   const [exchangeStatus, setExchangeStatus] = useState(
     EXCHANGES.map(ex => ({
       ...ex,
-      connected: true,
-      latency: Math.floor(Math.random() * 50) + 5,
+      connected: ex.name === "Jupiter" ? false : true,
+      latency: 0,
     }))
   );
   
   const [systemStatus, setSystemStatus] = useState<"running" | "paused" | "error">("running");
   const [showNotifications, setShowNotifications] = useState(false);
-  const [notifications] = useState([
-    { id: 1, type: "trade", message: "BTC/USDT spread detected: 0.12%", time: Date.now() - 5000 },
-    { id: 2, type: "system", message: "Data pipeline latency optimized to 23µs", time: Date.now() - 12000 },
-    { id: 3, type: "warning", message: "Binance rate limit: 80% utilized", time: Date.now() - 30000 },
-    { id: 4, type: "trade", message: "Arbitrage opportunity: ETH/USDT 0.08%", time: Date.now() - 45000 },
-  ]);
+  const [notifications, setNotifications] = useState<any[]>([]);
   
   const navRef = useRef<HTMLDivElement>(null);
 
-  // ── Stats simulation ────────────────────────────────────────────────────────
+  // ── WebSocket Integration ──────────────────────────────────────────────────
   useEffect(() => {
+    if (wsData) {
+      if (wsData.type === "MARKET_DATA") {
+        setStats(prev => ({
+          ...prev,
+          tps: prev.tps + 1,
+          latency: (Date.now() - wsData.timestamp) / 1000,
+        }));
+        
+        if (wsData.exchange_id === "JUPITER") {
+          setExchangeStatus(prev => prev.map(ex => 
+            ex.name === "Jupiter" ? { ...ex, connected: true, latency: Math.floor(Math.random() * 20) + 5 } : ex
+          ));
+        }
+      } else if (wsData.type === "SIGNAL") {
+        setStats(prev => ({ ...prev, totalTrades: prev.totalTrades + 1 }));
+        const newNotif = {
+          id: Date.now(),
+          type: "trade",
+          message: `Signal: ${wsData.side} ${wsData.symbol} @ ${wsData.price}`,
+          time: Date.now()
+        };
+        setNotifications(prev => [newNotif, ...prev].slice(0, 10));
+      }
+    }
+  }, [wsData]);
+
+  useEffect(() => {
+    setExchangeStatus(prev => prev.map(ex => 
+      ex.name === "Jupiter" ? { ...ex, connected: wsConnected } : ex
+    ));
+    setSystemStatus(wsConnected ? "running" : "paused");
+  }, [wsConnected]);
+
+  // ── Mounting & Simulation ──────────────────────────────────────────────────
+  useEffect(() => {
+    setMounted(true);
+    
     const interval = setInterval(() => {
+      setSystemTime(new Date());
       setStats(prev => ({
-        tps: Math.floor(Math.random() * 5000) + 8000,
-        totalTrades: prev.totalTrades + Math.floor(Math.random() * 100),
-        latency: Math.random() * 100 + 15,
+        ...prev,
         uptime: prev.uptime + 0.1,
-        memory: Math.random() * 2 + 2.5,
-        cpu: Math.random() * 20 + 10,
-        pnl: prev.pnl + (Math.random() - 0.48) * 100,
-        positions: Math.floor(Math.random() * 3) + 1,
-        activeStrategies: 2,
+        memory: 3.2 + Math.random() * 0.1,
+        cpu: 12 + Math.random() * 5,
       }));
-      
-      setExchangeStatus(prev =>
-        prev.map(ex => ({
-          ...ex,
-          latency: Math.max(1, ex.latency + Math.floor(Math.random() * 10) - 5),
-          connected: Math.random() > 0.02, // 98% uptime
-        }))
-      );
-    }, 200);
+    }, 100);
     
     return () => clearInterval(interval);
   }, []);
@@ -112,6 +123,10 @@ export default function Navbar() {
   // ── System status color ─────────────────────────────────────────────────────
   const statusColor = systemStatus === "running" ? "#00e676" : 
                       systemStatus === "paused" ? "#f5c518" : "#ff3a5c";
+
+  if (!mounted) {
+    return <div style={{ height: "4vh", background: "#0a0d14", borderBottom: "1px solid rgba(255,255,255,0.08)" }} />;
+  }
 
   return (
     <div
@@ -222,7 +237,7 @@ export default function Navbar() {
         <div style={metricStyle}>
           <span style={metricLabelStyle}>LAT</span>
           <span style={metricValueStyle(stats.latency < 30 ? "#00e676" : "#f5c518")}>
-            {stats.latency.toFixed(1)}µs
+            {stats.latency.toFixed(1)}ms
           </span>
         </div>
 

@@ -48,6 +48,25 @@ struct MarketData {
     }
 };
 
+enum class OrderSide {
+    BUY,
+    SELL
+};
+
+enum class OrderType {
+    MARKET,
+    LIMIT
+};
+
+struct Order {
+    std::string symbol;
+    OrderSide side;
+    OrderType type;
+    double price;
+    double quantity;
+    std::string client_order_id;
+};
+
 // Standardized callback signature
 using PriceCallback = std::function<void(const MarketData&)>;
 
@@ -56,9 +75,11 @@ class BaseExchange {
 public:
     virtual ~BaseExchange() = default;
     virtual void connect() = 0;
+    virtual void stop() = 0;
     virtual void subscribe(const std::vector<std::string>& symbols) = 0;
     virtual void set_callback(PriceCallback callback) = 0;
     virtual std::string get_exchange_id() const = 0;
+    virtual bool place_order(const Order& order) = 0;
 };
 
 // Exchange1 - Jupiter Perpetuals Implementation
@@ -68,9 +89,11 @@ public:
     ~Exchange1() override;
     
     void connect() override;
+    void stop() override;
     void subscribe(const std::vector<std::string>& symbols) override;
     void set_callback(PriceCallback callback) override;
     std::string get_exchange_id() const override { return "JUPITER"; }
+    bool place_order(const Order& order) override;
 
 private:
     void stream_loop();

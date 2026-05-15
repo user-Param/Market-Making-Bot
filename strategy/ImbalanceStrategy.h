@@ -2,7 +2,7 @@
 
 #include <string>
 #include "../exchange/BaseExchange.h"
-#include "../datapipeline/datapipeline.h"
+#include "../datapipeline/dataPipeline.h"
 
 
 enum class SignalType {
@@ -31,5 +31,5 @@ public:
 
 private:
     // Threshold for signal generation
-    static constexpr double THRESHOLD = 0.2;
+    static constexpr double THRESHOLD = 0.1;
 };

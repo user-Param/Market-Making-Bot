@@ -18,9 +18,7 @@ Exchange1::Exchange1() {
 }
 
 Exchange1::~Exchange1() {
-    running_ = false;
-    connected_ = false;
-    if (stream_thread_.joinable()) stream_thread_.join();
+    stop();
 }
 
 void Exchange1::connect() {
@@ -47,6 +45,14 @@ void Exchange1::connect() {
         std::cout << "[JUPITER] HFT Persistent Stream Connected" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "[JUPITER] Connection failed: " << e.what() << std::endl;
+    }
+}
+
+void Exchange1::stop() {
+    running_ = false;
+    connected_ = false;
+    if (stream_thread_.joinable()) {
+        stream_thread_.join();
     }
 }
 
@@ -99,7 +105,9 @@ void Exchange1::stream_loop() {
                     std::cerr << "[JUPITER] API Error: " << res.result_int() << " for " << symbol << std::endl;
                 }
             } catch (const std::exception& e) {
-                std::cerr << "[JUPITER] Stream loop error: " << e.what() << std::endl;
+                if (running_) {
+                    std::cerr << "[JUPITER] Stream loop error: " << e.what() << std::endl;
+                }
                 connected_ = false;
                 break;
             }
@@ -143,6 +151,15 @@ void Exchange1::fast_parse_and_callback(const std::string& body, const std::stri
             callback_(md);
         }
     } catch (const std::exception& e) {
-        std::cerr << "[JUPITER] Parsing error: " << e.what() << std::endl;
+        if (running_) {
+            std::cerr << "[JUPITER] Parsing error: " << e.what() << std::endl;
+        }
     }
+}
+
+bool Exchange1::place_order(const Order& order) {
+    std::cout << "[JUPITER] MOCK ORDER PLACED: " 
+              << (order.side == OrderSide::BUY ? "BUY" : "SELL") << " "
+              << order.quantity << " " << order.symbol << " @ " << order.price << std::endl;
+    return true;
 }
