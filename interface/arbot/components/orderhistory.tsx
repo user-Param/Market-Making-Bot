@@ -10,20 +10,18 @@ import {
   useImperativeHandle,
 } from "react";
 import { List } from "react-window";
+import { useWebSocket } from "../hooks/useWebSocket";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"];
 const TABS = [
-  { id: "open", label: "OPEN" },
   { id: "filled", label: "FILLED" },
+  { id: "open", label: "OPEN" },
   { id: "rejected", label: "REJECTED" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 
 const BUFFER_CAPACITY = 2000;        // keep last N orders in the ring buffer
 const BATCH_FLUSH_MS = 16;          // ~60 FPS state updates
-const DEMO_ORDERS_PER_TICK = 500;   // how many orders to inject per demo interval
-const DEMO_INTERVAL_MS = 50;        // demo tick interval (20 ticks/sec → 10k orders/sec)
 const ROW_HEIGHT = 22;              // pixel height of each order row
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -55,42 +53,10 @@ const timeStr = (ts: number) => {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
 
-let orderCounter = 1;
-
-// ─── Demo order factory (simple, fast) ────────────────────────────────────────
-function makeDemoOrder(): Order {
-  const symbol = SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
-  const side = Math.random() > 0.5 ? "buy" : "sell";
-  const type = Math.random() > 0.3 ? "market" : "limit";
-  const price = 65000 + Math.random() * 10000;
-  const qty = +(Math.random() * 2 + 0.01).toFixed(4);
-  const status: OrderStatus =
-    Math.random() > 0.15 ? "filled" : Math.random() > 0.5 ? "open" : "rejected";
-  const filledPrice =
-    status === "filled" ? price + (Math.random() - 0.5) * 20 : undefined;
-  const pnl =
-    status === "filled" && filledPrice
-      ? side === "buy"
-        ? (filledPrice - price) * qty
-        : (price - filledPrice) * qty
-      : undefined;
-  return {
-    id: `ORD${String(orderCounter++).padStart(5, "0")}`,
-    symbol,
-    side,
-    type,
-    qty,
-    price,
-    filledPrice,
-    status,
-    timestamp: Date.now() - Math.floor(Math.random() * 120000),
-    pnl,
-  };
-}
-
 // ─── Sub-component: Single Order Row (memoised) ───────────────────────────────
 const OrderRow = ({ orders, index, style }: any) => {
   const order: Order = orders[index];
+  if (!order) return null;
   const posPnl = (order.pnl ?? 0) >= 0;
   const sideColor = order.side === "buy" ? "#00e676" : "#ff3a5c";
   const statusColor =
@@ -215,126 +181,75 @@ const OrderRow = ({ orders, index, style }: any) => {
 };
 
 // ─── Main Component ───────────────────────────────────────────────────────────
-/**
- * OrderHistory – ultra-high‑throughput order table
- *
- * Ref API:
- *   orderHistoryRef.current.addOrder({
- *     symbol, side, type, qty, price, filledPrice?,
- *     status, pnl?, timestamp?
- *   })
- *
- * Props:
- *   demo   {bool}  – run built‑in high‑speed simulator (default true)
- */
 const OrderHistoryView = forwardRef(function OrderHistoryView(
-  { demo = true }: { demo?: boolean },
+  { demo = false }: { demo?: boolean },
   ref
 ) {
-  // ── Ring buffer & mutable state (avoids React re-render on every order) ───
-  const bufferRef = useRef<Order[]>([]);        // ring buffer, max BUFFER_CAPACITY
-  const startIdxRef = useRef(0);                // index of oldest order in ring
-  const countRef = useRef(0);                   // total orders currently in ring
-  const pendingOrders = useRef<Order[]>([]);    // orders queued since last flush
-
-  // React‑visible data snapshot (flushed at 60 FPS)
+  const bufferRef = useRef<Order[]>([]);        
+  const startIdxRef = useRef(0);                
+  const countRef = useRef(0);                   
   const [visibleOrders, setVisibleOrders] = useState<Order[]>([]);
-  const [activeTab, setActiveTab] = useState<TabId>("open");
+  const [activeTab, setActiveTab] = useState<TabId>("filled");
+  const { data: wsData } = useWebSocket("ws://localhost:9001");
 
-  // Aggregate stats (updated atomically in the fast path)
-  const statsRef = useRef({
-    totalTrades: 0,
-    totalPnl: 0,
-    lastFlushTime: Date.now(),
-    flushCount: 0,
-  });
   const [statsDisplay, setStatsDisplay] = useState({
     totalTrades: 0,
     totalPnl: 0,
     tps: 0,
-    avgLatency: 0,
   });
 
-  // ── Add order (ultra‑fast path, no React state update) ──────────────────────
   const addOrder = useCallback((order: Order) => {
     const o = { ...order, timestamp: order.timestamp || Date.now() };
-    // Push into ring buffer
     const buf = bufferRef.current;
     const start = startIdxRef.current;
     const count = countRef.current;
     if (count === BUFFER_CAPACITY) {
-      // overwrite oldest
       buf[(start + count) % BUFFER_CAPACITY] = o;
       startIdxRef.current = (start + 1) % BUFFER_CAPACITY;
     } else {
       buf[(start + count) % BUFFER_CAPACITY] = o;
       countRef.current = count + 1;
     }
-    // Accumulate for batch flush
-    pendingOrders.current.push(o);
-    // Update global stats
-    statsRef.current.totalTrades++;
-    if (o.pnl !== undefined) {
-      statsRef.current.totalPnl += o.pnl;
-    }
+    setStatsDisplay(prev => ({
+      ...prev,
+      totalTrades: prev.totalTrades + 1,
+      totalPnl: prev.totalPnl + (o.pnl || 0)
+    }));
   }, []);
 
-  // Expose addOrder via ref
-  useImperativeHandle(ref, () => ({ addOrder }), [addOrder]);
+  useEffect(() => {
+    if (wsData && wsData.type === "SIGNAL") {
+      addOrder({
+        id: `ORD${String(Date.now()).slice(-5)}`,
+        symbol: wsData.symbol,
+        side: wsData.side.toLowerCase() as OrderSide,
+        type: "market",
+        price: wsData.price,
+        status: "filled",
+        timestamp: wsData.timestamp,
+        qty: 1.0,
+        pnl: (Math.random() - 0.4) * 0.1 // simulated PnL for now
+      });
+    }
+  }, [wsData, addOrder]);
 
-  // ── Batch flush: move pending orders into React state at 60 FPS ─────────────
   useEffect(() => {
     const flush = () => {
       const buf = bufferRef.current;
       const count = countRef.current;
       const start = startIdxRef.current;
-      // Build a fresh array from the ring buffer (only once per frame)
       const snapshot: Order[] = [];
       for (let i = 0; i < count; i++) {
         snapshot.push(buf[(start + i) % BUFFER_CAPACITY]);
       }
-      snapshot.reverse(); // newest first
+      snapshot.reverse(); 
       setVisibleOrders(snapshot);
-
-      // Update stats display
-      const now = Date.now();
-      const elapsed = now - statsRef.current.lastFlushTime;
-      if (elapsed >= 1000) {
-        const tps = Math.round(
-          (statsRef.current.totalTrades - statsRef.current.flushCount) * 1000 / elapsed
-        );
-        statsRef.current.flushCount = statsRef.current.totalTrades;
-        statsRef.current.lastFlushTime = now;
-        setStatsDisplay({
-          totalTrades: statsRef.current.totalTrades,
-          totalPnl: statsRef.current.totalPnl,
-          tps,
-          avgLatency: 0, // placeholder
-        });
-      }
-      pendingOrders.current = [];
     };
 
     const interval = setInterval(flush, BATCH_FLUSH_MS);
     return () => clearInterval(interval);
   }, []);
 
-  // ── Demo simulator: inject massive order flow ──────────────────────────────
-  useEffect(() => {
-    if (!demo) return;
-    // Pre‑populate with a few thousand orders
-    for (let i = 0; i < 1000; i++) addOrder(makeDemoOrder());
-
-    const id = setInterval(() => {
-      // Inject a batch of orders
-      for (let i = 0; i < DEMO_ORDERS_PER_TICK; i++) {
-        addOrder(makeDemoOrder());
-      }
-    }, DEMO_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [demo, addOrder]);
-
-  // ── Filter orders visible on screen ─────────────────────────────────────────
   const filteredOrders = visibleOrders.filter((o) => o.status === activeTab);
 
   return (
@@ -351,77 +266,34 @@ const OrderHistoryView = forwardRef(function OrderHistoryView(
         borderRight: "1px solid rgba(255,255,255,0.05)",
       }}
     >
-      {/* ── Header Bar with stats ──────────────────────────────────────────── */}
       <div
         style={{
           display: "flex",
-          flexWrap: "wrap",
           alignItems: "center",
           justifyContent: "space-between",
           padding: "4px 10px",
           borderBottom: "1px solid rgba(255,255,255,0.05)",
           background: "rgba(255,255,255,0.01)",
           flexShrink: 0,
-          rowGap: 4,
         }}
       >
-        <span
-          style={{
-            color: "#e8ecf0",
-            fontWeight: "bold",
-            fontSize: 12,
-            letterSpacing: 0.5,
-          }}
-        >
-          ORDERS
-        </span>
+        <span style={{ color: "#e8ecf0", fontWeight: "bold", fontSize: 12 }}>ORDERS</span>
         <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-          <span style={{ color: "rgba(120,140,165,0.6)", fontSize: 9 }}>
-            TOTAL {fmtK(statsDisplay.totalTrades)}
-          </span>
-          <span style={{ color: "#00e676", fontSize: 9 }}>
-            TPS {fmtK(statsDisplay.tps)}
-          </span>
-          <span
-            style={{
-              color: statsDisplay.totalPnl >= 0 ? "#00e676" : "#ff3a5c",
-              fontSize: 9,
-            }}
-          >
-            P&L ${fmt2(statsDisplay.totalPnl)}
-          </span>
+          <span style={{ color: "rgba(120,140,165,0.6)", fontSize: 9 }}>TOTAL {fmtK(statsDisplay.totalTrades)}</span>
+          <span style={{ color: statsDisplay.totalPnl >= 0 ? "#00e676" : "#ff3a5c", fontSize: 9 }}>P&L ${fmt2(statsDisplay.totalPnl)}</span>
         </div>
       </div>
 
-      {/* ── Tabs ────────────────────────────────────────────────────────────── */}
-      <div
-        style={{
-          display: "flex",
-          padding: "2px 10px",
-          borderBottom: "1px solid rgba(255,255,255,0.03)",
-          flexShrink: 0,
-          gap: 2,
-        }}
-      >
+      <div style={{ display: "flex", padding: "2px 10px", borderBottom: "1px solid rgba(255,255,255,0.03)", gap: 2 }}>
         {TABS.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
             style={{
-              background:
-                activeTab === tab.id ? "rgba(0,230,118,0.1)" : "transparent",
-              border:
-                activeTab === tab.id
-                  ? "1px solid rgba(0,230,118,0.3)"
-                  : "1px solid transparent",
-              color:
-                activeTab === tab.id ? "#00e676" : "rgba(150,165,185,0.7)",
-              fontSize: 9,
-              fontWeight: activeTab === tab.id ? "bold" : "normal",
-              padding: "3px 10px",
-              borderRadius: 3,
-              cursor: "pointer",
-              fontFamily: "inherit",
+              background: activeTab === tab.id ? "rgba(0,230,118,0.1)" : "transparent",
+              border: activeTab === tab.id ? "1px solid rgba(0,230,118,0.3)" : "1px solid transparent",
+              color: activeTab === tab.id ? "#00e676" : "rgba(150,165,185,0.7)",
+              fontSize: 9, padding: "3px 10px", borderRadius: 3, cursor: "pointer", fontFamily: "inherit",
             }}
           >
             {tab.label}
@@ -429,18 +301,7 @@ const OrderHistoryView = forwardRef(function OrderHistoryView(
         ))}
       </div>
 
-      {/* ── Column labels (sticky) ─────────────────────────────────────────── */}
-      <div
-        style={{
-          display: "flex",
-          gap: 6,
-          padding: "2px 10px",
-          borderBottom: "1px solid rgba(255,255,255,0.03)",
-          color: "rgba(90,110,140,0.45)",
-          fontSize: 8,
-          flexShrink: 0,
-        }}
-      >
+      <div style={{ display: "flex", gap: 6, padding: "2px 10px", borderBottom: "1px solid rgba(255,255,255,0.03)", color: "rgba(90,110,140,0.45)", fontSize: 8 }}>
         <span style={{ width: 50 }}>TIME</span>
         <span style={{ width: 70 }}>ORDER ID</span>
         <span style={{ width: 70 }}>SYMBOL</span>
@@ -452,7 +313,6 @@ const OrderHistoryView = forwardRef(function OrderHistoryView(
         <span style={{ marginLeft: "auto" }}>P&L</span>
       </div>
 
-      {/* ── Virtualized order list (ultra‑fast rendering) ──────────────────── */}
       <div style={{ flex: 1, minHeight: 0 }}>
         {filteredOrders.length > 0 ? (
           <List
@@ -463,46 +323,17 @@ const OrderHistoryView = forwardRef(function OrderHistoryView(
             style={{ height: "100%", width: "100%", overflow: "auto" }}
           />
         ) : (
-          <div
-            style={{
-              padding: 16,
-              color: "rgba(120,140,165,0.3)",
-              fontSize: 10,
-              textAlign: "center",
-            }}
-          >
-            No {activeTab} orders
-          </div>
+          <div style={{ padding: 16, color: "rgba(120,140,165,0.3)", fontSize: 10, textAlign: "center" }}>No {activeTab} orders</div>
         )}
-      </div>
-
-      {/* ── Footer ──────────────────────────────────────────────────────────── */}
-      <div
-        style={{
-          padding: "3px 10px",
-          borderTop: "1px solid rgba(255,255,255,0.04)",
-          display: "flex",
-          justifyContent: "space-between",
-          color: "rgba(100,120,145,0.55)",
-          fontSize: 9,
-          flexShrink: 0,
-        }}
-      >
-        <span>
-          {filteredOrders.length} order{filteredOrders.length !== 1 ? "s" : ""}{" "}
-          shown
-        </span>
-        <span>LIVE</span>
       </div>
     </div>
   );
 });
 
-// ─── Wrapper for page ────────────────────────────────────────────────────────
 export default function OrderHistory() {
   return (
     <div className="h-full w-[40%] text-sm">
-      <OrderHistoryView demo={true} />
+      <OrderHistoryView demo={false} />
     </div>
   );
 }

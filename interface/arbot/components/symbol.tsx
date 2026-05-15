@@ -11,6 +11,7 @@ import {
   useImperativeHandle,
 } from "react";
 import { List } from "react-window";
+import { useWebSocket } from "../hooks/useWebSocket";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const EXCHANGES = [
@@ -308,6 +309,8 @@ const SymbolView = forwardRef(function SymbolView(
   const [view, setView] = useState<"all" | "watchlist">("all");
   const [watchlist, setWatchlist] = useState<Set<number>>(new Set());
   const listRef = useRef<any>(null);
+  const { data: wsData } = useWebSocket("ws://localhost:9001");
+
 
   // ── Price simulation ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -327,6 +330,19 @@ const SymbolView = forwardRef(function SymbolView(
     }, 100);
     return () => clearInterval(interval);
   }, [demo]);
+
+  useEffect(() => {
+    if (wsData && wsData.type === "MARKET_DATA") {
+      const frontendSymbol = wsData.symbol.replace("-PERP", "/USDT");
+      setSymbols((prev) =>
+        prev.map((sym) =>
+          sym.symbol === frontendSymbol
+            ? { ...sym, price: wsData.price }
+            : sym
+        )
+      );
+    }
+  }, [wsData]);
 
   // ── Filter and sort symbols ─────────────────────────────────────────────────
   const filteredSymbols = useMemo(() => {
@@ -698,7 +714,7 @@ const SymbolView = forwardRef(function SymbolView(
 export default function Symbol() {
   return (
     <div className="h-full text-sm w-[15%] border-r border-black ">
-      <SymbolView demo={true} />
+      <SymbolView demo={false} />
     </div>
   );
 }

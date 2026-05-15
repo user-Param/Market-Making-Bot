@@ -19,6 +19,8 @@ add_executable(jupiter_feed
     exchange/Exchange1.cpp
     datapipeline/dataPipeline.cpp
     strategy/ImbalanceStrategy.cpp
+    executor/executor.cpp
+    executor/WebSocketServer.cpp
 )
 
 # Link libraries

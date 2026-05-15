@@ -42,6 +42,14 @@ void DataPipeline::stop() {
     running_ = false;
     data_available_.notify_all();
     
+    // Stop all exchanges first
+    {
+        std::lock_guard<std::mutex> lock(exchanges_mutex_);
+        for (auto& exchange : exchanges_) {
+            exchange->stop();
+        }
+    }
+
     if (pipeline_thread_.joinable()) {
         pipeline_thread_.join();
     }

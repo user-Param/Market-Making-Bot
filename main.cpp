@@ -1,71 +1,74 @@
 #include "exchange/BaseExchange.h"
 #include "datapipeline/dataPipeline.h"
 #include "strategy/ImbalanceStrategy.h"
+#include "executor/executor.h"
+#include "executor/WebSocketServer.h"
 #include <iostream>
 #include <csignal>
 #include <atomic>
 
 std::atomic<bool> running{true};
+net::io_context ioc;
 
 void signal_handler(int signal) {
     running = false;
+    ioc.stop();
 }
 
 int main() {
-    // Set up signal handling for graceful shutdown
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
     
     try {
-        // Instantiate the strategy
+        // Start WebSocket Server for Frontend
+        auto const address = net::ip::make_address("0.0.0.0");
+        auto const port = static_cast<unsigned short>(9001);
+        auto ws_server = std::make_shared<WebSocketServer>(ioc, tcp::endpoint{address, port});
+        ws_server->run();
+        
+        std::thread ioc_thread([]() { ioc.run(); });
+
         auto strategy = std::make_shared<ImbalanceStrategy>();
-        
-        // Create exchange instances
         auto jupiter = std::make_shared<Exchange1>();
-        
-        // Get pipeline instance
+        auto executor = std::make_shared<Executor>(jupiter);
         auto& pipeline = DataPipeline::get_instance();
         
-        // Register exchanges
         pipeline.register_exchange(jupiter);
         
-        // Connect Datafeed to Strategy
-        pipeline.set_data_handler([strategy](const MarketData& data) {
-            // 1. Process data through the strategy
-            Signal signal = strategy->onMarketData(data);
-            
-            // 2. Log high-speed feed update
-            // std::cout << "[FEED] " << data.symbol << " | Price: " << data.price 
-            //           << " | BidQty: " << data.bid_qty << " | AskQty: " << data.ask_qty << std::endl;
+        pipeline.set_data_handler([strategy, executor, ws_server](const MarketData& data) {
+            // Broadcast Market Data to Frontend
+            nlohmann::json md_json = data.to_json();
+            md_json["type"] = "MARKET_DATA";
+            ws_server->broadcast(md_json);
 
-            // 3. Emit Signal if generated
+            Signal signal = strategy->onMarketData(data);
             if (signal.type != SignalType::NONE) {
-                std::string side = (signal.type == SignalType::BUY) ? "BUY" : "SELL";
-                std::cout << ">>> [STRATEGY SIGNAL] " << side << " " << signal.symbol 
-                          << " @ " << signal.price << " [TS: " << signal.timestamp << "]" << std::endl;
+                // Broadcast Signal
+                nlohmann::json sig_json;
+                sig_json["type"] = "SIGNAL";
+                sig_json["symbol"] = signal.symbol;
+                sig_json["side"] = (signal.type == SignalType::BUY ? "BUY" : "SELL");
+                sig_json["price"] = signal.price;
+                sig_json["timestamp"] = signal.timestamp;
+                ws_server->broadcast(sig_json);
+
+                executor->execute(signal);
             }
         });
         
-        // Start pipeline (connects to exchanges)
         pipeline.start();
         
-        // Subscribe to Jupiter perpetuals symbols
-        std::vector<std::string> symbols = {
-            "SOL-PERP",
-            "BTC-PERP", 
-            "ETH-PERP",
-        };
+        std::vector<std::string> symbols = {"SOL-PERP", "BTC-PERP", "ETH-PERP"};
         pipeline.subscribe_all(symbols);
         
-        std::cout << "[MAIN] HFT System Active. Strategy: Imbalance" << std::endl;
+        std::cout << "[MAIN] HFT System Active. WebSocket Server: ws://localhost:9001" << std::endl;
         
-        // Keep main thread alive
         while (running) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
         
-        std::cout << "[MAIN] Shutting down..." << std::endl;
         pipeline.stop();
+        if (ioc_thread.joinable()) ioc_thread.join();
         
     } catch (const std::exception& e) {
         std::cerr << "[MAIN] Fatal error: " << e.what() << std::endl;
